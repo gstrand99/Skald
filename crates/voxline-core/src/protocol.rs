@@ -35,6 +35,8 @@ pub enum Command {
     AsrLoad,
     AsrUnload,
     AsrRestart,
+    TestClipboard,
+    TestPaste,
     Subscribe { events: Vec<EventKind> },
 }
 
@@ -112,12 +114,18 @@ pub struct AsrBenchmark {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct DictationResult {
     pub job_id: JobId,
     pub transcript: Transcript,
     pub benchmark: AsrBenchmark,
     pub total_ms: u64,
     pub copied_to_clipboard: bool,
+    pub pasted: bool,
+    pub paste_attempted: bool,
+    pub paste_succeeded: bool,
+    pub clipboard_restored: bool,
+    pub insertion_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

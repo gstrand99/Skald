@@ -402,6 +402,11 @@ impl Config {
                 "asr lifecycle mode must be on_demand or keep_warm".into(),
             ));
         }
+        if self.injection.auto_paste != AutoPasteMode::Off && !self.injection.copy_to_clipboard {
+            return Err(ConfigError::Validation(
+                "auto paste requires copy_to_clipboard".into(),
+            ));
+        }
         Ok(())
     }
 }

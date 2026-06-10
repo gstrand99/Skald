@@ -35,6 +35,18 @@ cancel: build
 status: build
     target/debug/voxline status
 
+# Verify clipboard write/read/restore through the daemon.
+test-clipboard: build
+    target/debug/voxline test clipboard
+
+# Paste a visible test string into the currently focused safe target.
+test-paste: build
+    target/debug/voxline test paste
+
+# Report session, clipboard, target detection, and paste capabilities.
+doctor: build
+    target/debug/voxline doctor
+
 # Validate a generated WAV file.
 inspect wav:
     file {{wav}}
