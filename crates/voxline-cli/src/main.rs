@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde::Serialize;
@@ -30,6 +32,16 @@ enum Commands {
     Stop,
     Cancel,
     Watch,
+    Record {
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        #[arg(long)]
+        no_cleanup: bool,
+    },
+    Test {
+        #[command(subcommand)]
+        command: TestCommands,
+    },
     Doctor {
         #[arg(long)]
         json: bool,
@@ -48,6 +60,14 @@ enum ConfigCommands {
         force: bool,
     },
     Validate,
+}
+
+#[derive(Debug, Subcommand)]
+enum TestCommands {
+    Mic {
+        #[arg(long, default_value_t = 3)]
+        seconds: u64,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -84,8 +104,31 @@ async fn main() -> Result<()> {
         Commands::Stop => print_response(&send(Command::Stop).await?),
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
         Commands::Watch => watch().await?,
+        Commands::Record {
+            seconds,
+            no_cleanup: _,
+        } => record(seconds).await?,
+        Commands::Test { command } => match command {
+            TestCommands::Mic { seconds } => record(seconds).await?,
+        },
         Commands::Doctor { json } => doctor(json).await?,
         Commands::Config { command } => config(&command)?,
+    }
+    Ok(())
+}
+
+async fn record(seconds: u64) -> Result<()> {
+    let started = send(Command::Start).await?;
+    if !started.ok {
+        print_response(&started);
+        bail!("recording did not start");
+    }
+    println!("Recording for {seconds} seconds...");
+    tokio::time::sleep(Duration::from_secs(seconds)).await;
+    let stopped = send(Command::Stop).await?;
+    print_response(&stopped);
+    if !stopped.ok {
+        bail!("recording did not stop cleanly");
     }
     Ok(())
 }
