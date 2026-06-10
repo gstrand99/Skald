@@ -85,6 +85,8 @@ enum TestCommands {
         #[arg(long, default_value_t = 3)]
         seconds: u64,
     },
+    Clipboard,
+    Paste,
 }
 
 #[derive(Debug, Subcommand)]
@@ -132,6 +134,7 @@ struct DoctorReport {
     recommended_command: &'static str,
     privacy: PrivacyReport,
     asr: AsrReport,
+    paste: voxline_platform::PasteReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -200,6 +203,8 @@ async fn main() -> Result<()> {
         } => record(seconds).await?,
         Commands::Test { command } => match command {
             TestCommands::Mic { seconds } => record(seconds).await?,
+            TestCommands::Clipboard => print_response(&send(Command::TestClipboard).await?),
+            TestCommands::Paste => print_response(&send(Command::TestPaste).await?),
         },
         Commands::Doctor { json } => doctor(json).await?,
         Commands::Config { command } => config(&command)?,
@@ -379,6 +384,7 @@ async fn doctor(json: bool) -> Result<()> {
             gpu_requested: config.asr.gpu,
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
         },
+        paste: voxline_platform::paste_report(),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -430,6 +436,21 @@ fn print_doctor(report: &DoctorReport) {
     println!("  Model exists: {}", yes_no(report.asr.model_exists));
     println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
     println!("  Lifecycle: {}", report.asr.lifecycle_mode);
+    println!("Paste:");
+    println!("  Backend: {}", report.paste.backend);
+    println!(
+        "  Clipboard available: {}",
+        yes_no(report.paste.clipboard_available)
+    );
+    println!(
+        "  Target detection: {}",
+        yes_no(report.paste.target_detection_available)
+    );
+    println!(
+        "  Paste available: {}",
+        yes_no(report.paste.paste_available)
+    );
+    println!("  Behavior: {}", report.paste.reason);
 }
 
 fn yes_no(value: bool) -> &'static str {
