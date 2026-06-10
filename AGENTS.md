@@ -17,6 +17,10 @@ Before implementing a change:
 5. After the user confirms the issue is fixed, open a concise pull request from
    the branch to `main`.
 
+Expose workspace development and manual validation commands as simple `just`
+recipes. Keep the `justfile` current when adding or changing developer
+workflows.
+
 ## Writing
 
 Keep READMEs, issues, pull requests, commit messages, and other agent-authored
