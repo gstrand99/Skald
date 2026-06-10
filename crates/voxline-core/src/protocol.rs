@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -55,6 +57,8 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<DaemonStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording: Option<AudioRecording>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ProtocolError>,
 }
 
@@ -62,6 +66,18 @@ pub struct Response {
 pub struct ProtocolError {
     pub code: String,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioRecording {
+    pub job_id: JobId,
+    pub wav_path: PathBuf,
+    pub duration_ms: u64,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub rms_energy: f32,
+    pub peak_energy: f32,
+    pub speech_detected: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

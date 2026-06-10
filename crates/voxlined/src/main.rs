@@ -1,3 +1,5 @@
+mod audio;
+
 use std::{
     path::Path,
     sync::Arc,
@@ -16,7 +18,10 @@ use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use voxline_core::{
     config::Config,
-    protocol::{Command, DaemonStatus, Event, PROTOCOL_VERSION, ProtocolError, Request, Response},
+    protocol::{
+        AudioRecording, Command, DaemonStatus, Event, JobId, JobState, PROTOCOL_VERSION,
+        ProtocolError, Request, Response,
+    },
     runtime::{ensure_runtime_dir, socket_path},
 };
 
@@ -30,6 +35,7 @@ struct Args {
 struct AppState {
     status: RwLock<DaemonStatus>,
     events: broadcast::Sender<Event>,
+    audio: audio::AudioRecorder,
 }
 
 #[tokio::main]
@@ -56,6 +62,7 @@ async fn main() -> Result<()> {
             ..DaemonStatus::default()
         }),
         events,
+        audio: audio::AudioRecorder::spawn(config.audio),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -101,6 +108,7 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
                     request_id: String::new(),
                     ok: false,
                     status: None,
+                    recording: None,
                     error: Some(ProtocolError {
                         code: "invalid_request".into(),
                         message: error.to_string(),
@@ -135,35 +143,29 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
 async fn dispatch(request: Request, state: &AppState) -> Response {
     match request.command {
         Command::Status => ok_response(request.request_id, state.status.read().await.clone()),
-        Command::Toggle | Command::Start | Command::Stop | Command::Cancel => {
-            let status = state.status.read().await.clone();
-            let error = ProtocolError {
-                code: "audio_not_implemented".into(),
-                message: "audio recording is planned for milestone M2".into(),
-            };
-            let _ = state.events.send(Event::Error {
-                protocol_version: PROTOCOL_VERSION,
-                timestamp_ms: now_ms(),
-                job_id: status.active_job_id.clone(),
-                error: error.clone(),
-            });
-            error_response(
-                request.request_id,
-                &error.code,
-                &error.message,
-                Some(status),
-            )
-        }
+        Command::Toggle => toggle(request.request_id, state).await,
+        Command::Start => start(request.request_id, state).await,
+        Command::Stop => stop(request.request_id, state).await,
+        Command::Cancel => cancel(request.request_id, state).await,
         Command::Subscribe { .. } => unreachable!("subscribe handled before dispatch"),
     }
 }
 
 fn ok_response(request_id: String, status: DaemonStatus) -> Response {
+    success_response(request_id, status, None)
+}
+
+fn success_response(
+    request_id: String,
+    status: DaemonStatus,
+    recording: Option<AudioRecording>,
+) -> Response {
     Response {
         protocol_version: PROTOCOL_VERSION,
         request_id,
         ok: true,
         status: Some(status),
+        recording,
         error: None,
     }
 }
@@ -179,11 +181,137 @@ fn error_response(
         request_id,
         ok: false,
         status,
+        recording: None,
         error: Some(ProtocolError {
             code: code.into(),
             message: message.into(),
         }),
     }
+}
+
+async fn toggle(request_id: String, state: &AppState) -> Response {
+    match state.status.read().await.job_state {
+        JobState::Idle => start(request_id, state).await,
+        JobState::Recording => stop(request_id, state).await,
+        _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
+    }
+}
+
+async fn start(request_id: String, state: &AppState) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    let job_id = JobId::new();
+    match state.audio.start(job_id.clone()).await {
+        Ok(()) => {
+            let status = update_state(state, Some(job_id), JobState::Recording).await;
+            ok_response(request_id, status)
+        }
+        Err(error) => audio_error_response(request_id, state, error).await,
+    }
+}
+
+async fn stop(request_id: String, state: &AppState) -> Response {
+    let job_id = {
+        let status = state.status.read().await;
+        if status.job_state != JobState::Recording {
+            drop(status);
+            return state_error(
+                request_id,
+                state,
+                "no_active_recording",
+                "there is no active recording",
+            )
+            .await;
+        }
+        status
+            .active_job_id
+            .clone()
+            .expect("recording has a job id")
+    };
+    update_state(state, Some(job_id.clone()), JobState::Stopping).await;
+    match state.audio.stop(job_id).await {
+        Ok(recording) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            success_response(request_id, status, Some(recording))
+        }
+        Err(error) => audio_error_response(request_id, state, error).await,
+    }
+}
+
+async fn cancel(request_id: String, state: &AppState) -> Response {
+    let job_id = {
+        let status = state.status.read().await;
+        if status.job_state != JobState::Recording {
+            drop(status);
+            return state_error(
+                request_id,
+                state,
+                "no_active_recording",
+                "there is no active recording",
+            )
+            .await;
+        }
+        status
+            .active_job_id
+            .clone()
+            .expect("recording has a job id")
+    };
+    match state.audio.cancel(job_id.clone()).await {
+        Ok(()) => {
+            update_state(state, Some(job_id), JobState::Cancelled).await;
+            let status = update_state(state, None, JobState::Idle).await;
+            ok_response(request_id, status)
+        }
+        Err(error) => audio_error_response(request_id, state, error).await,
+    }
+}
+
+async fn update_state(
+    state: &AppState,
+    job_id: Option<JobId>,
+    job_state: JobState,
+) -> DaemonStatus {
+    let mut status = state.status.write().await;
+    status.active_job_id.clone_from(&job_id);
+    status.job_state.clone_from(&job_state);
+    let snapshot = status.clone();
+    let _ = state.events.send(Event::State {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        job_id,
+        job_state,
+        final_model_state: snapshot.final_model_state.clone(),
+    });
+    snapshot
+}
+
+async fn state_error(request_id: String, state: &AppState, code: &str, message: &str) -> Response {
+    let status = state.status.read().await.clone();
+    emit_error(state, status.active_job_id.clone(), code, message);
+    error_response(request_id, code, message, Some(status))
+}
+
+async fn audio_error_response(
+    request_id: String,
+    state: &AppState,
+    error: audio::AudioError,
+) -> Response {
+    emit_error(state, None, "audio_error", &error.to_string());
+    let status = update_state(state, None, JobState::Idle).await;
+    error_response(request_id, "audio_error", &error.to_string(), Some(status))
+}
+
+fn emit_error(state: &AppState, job_id: Option<JobId>, code: &str, message: &str) {
+    let _ = state.events.send(Event::Error {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        job_id,
+        error: ProtocolError {
+            code: code.into(),
+            message: message.into(),
+        },
+    });
 }
 
 async fn write_json_line<T: serde::Serialize>(
