@@ -4,10 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["asr-whisper-rs-cpu"]
+asr-whisper-rs-cpu = []
+asr-whisper-rs-cuda = ["whisper-rs/cuda"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 cpal.workspace = true
+dirs.workspace = true
 hound.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -16,6 +22,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 voxline-core = { path = "../voxline-core" }
+whisper-rs = "0.16"
 
 [lints]
 workspace = true

@@ -30,6 +30,11 @@ pub enum Command {
     Start,
     Stop,
     Cancel,
+    Transcribe { audio_path: PathBuf },
+    AsrStatus,
+    AsrLoad,
+    AsrUnload,
+    AsrRestart,
     Subscribe { events: Vec<EventKind> },
 }
 
@@ -59,6 +64,10 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recording: Option<AudioRecording>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<Transcript>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub benchmark: Option<AsrBenchmark>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ProtocolError>,
 }
 
@@ -78,6 +87,28 @@ pub struct AudioRecording {
     pub rms_energy: f32,
     pub peak_energy: f32,
     pub speech_detected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Transcript {
+    pub text: String,
+    pub language: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub segments: Vec<TranscriptSegment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TranscriptSegment {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AsrBenchmark {
+    pub model_load_ms: u64,
+    pub transcribe_ms: u64,
+    pub audio_duration_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -113,6 +144,7 @@ pub struct DaemonStatus {
     pub preview_model_state: Option<ModelState>,
     pub cleanup_enabled: bool,
     pub auto_paste_effective: String,
+    pub asr_gpu_build: bool,
 }
 
 impl Default for DaemonStatus {
@@ -125,6 +157,7 @@ impl Default for DaemonStatus {
             preview_model_state: None,
             cleanup_enabled: false,
             auto_paste_effective: "clipboard_only".into(),
+            asr_gpu_build: false,
         }
     }
 }
