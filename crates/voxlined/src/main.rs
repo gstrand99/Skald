@@ -1,3 +1,4 @@
+mod asr;
 mod audio;
 
 use std::{
@@ -19,8 +20,8 @@ use tracing_subscriber::EnvFilter;
 use voxline_core::{
     config::Config,
     protocol::{
-        AudioRecording, Command, DaemonStatus, Event, JobId, JobState, PROTOCOL_VERSION,
-        ProtocolError, Request, Response,
+        AsrBenchmark, AudioRecording, Command, DaemonStatus, Event, JobId, JobState, ModelState,
+        PROTOCOL_VERSION, ProtocolError, Request, Response, Transcript,
     },
     runtime::{ensure_runtime_dir, socket_path},
 };
@@ -36,6 +37,7 @@ struct AppState {
     status: RwLock<DaemonStatus>,
     events: broadcast::Sender<Event>,
     audio: audio::AudioRecorder,
+    asr: asr::AsrManager,
 }
 
 #[tokio::main]
@@ -59,10 +61,12 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         status: RwLock::new(DaemonStatus {
             cleanup_enabled: config.cleanup.enabled,
+            asr_gpu_build: cfg!(feature = "asr-whisper-rs-cuda"),
             ..DaemonStatus::default()
         }),
         events,
         audio: audio::AudioRecorder::spawn(config.audio),
+        asr: asr::AsrManager::spawn(config.asr, config.vocabulary),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -109,6 +113,8 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
                     ok: false,
                     status: None,
                     recording: None,
+                    transcript: None,
+                    benchmark: None,
                     error: Some(ProtocolError {
                         code: "invalid_request".into(),
                         message: error.to_string(),
@@ -142,11 +148,19 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
 
 async fn dispatch(request: Request, state: &AppState) -> Response {
     match request.command {
-        Command::Status => ok_response(request.request_id, state.status.read().await.clone()),
+        Command::Status | Command::AsrStatus => {
+            ok_response(request.request_id, state.status.read().await.clone())
+        }
         Command::Toggle => toggle(request.request_id, state).await,
         Command::Start => start(request.request_id, state).await,
         Command::Stop => stop(request.request_id, state).await,
         Command::Cancel => cancel(request.request_id, state).await,
+        Command::Transcribe { audio_path } => {
+            transcribe(request.request_id, state, audio_path).await
+        }
+        Command::AsrLoad => asr_load(request.request_id, state).await,
+        Command::AsrUnload => asr_unload(request.request_id, state).await,
+        Command::AsrRestart => asr_restart(request.request_id, state).await,
         Command::Subscribe { .. } => unreachable!("subscribe handled before dispatch"),
     }
 }
@@ -160,12 +174,24 @@ fn success_response(
     status: DaemonStatus,
     recording: Option<AudioRecording>,
 ) -> Response {
+    data_response(request_id, status, recording, None, None)
+}
+
+fn data_response(
+    request_id: String,
+    status: DaemonStatus,
+    recording: Option<AudioRecording>,
+    transcript: Option<Transcript>,
+    benchmark: Option<AsrBenchmark>,
+) -> Response {
     Response {
         protocol_version: PROTOCOL_VERSION,
         request_id,
         ok: true,
         status: Some(status),
         recording,
+        transcript,
+        benchmark,
         error: None,
     }
 }
@@ -182,11 +208,104 @@ fn error_response(
         ok: false,
         status,
         recording: None,
+        transcript: None,
+        benchmark: None,
         error: Some(ProtocolError {
             code: code.into(),
             message: message.into(),
         }),
     }
+}
+
+async fn transcribe(
+    request_id: String,
+    state: &AppState,
+    audio_path: std::path::PathBuf,
+) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    update_model_state(state, ModelState::Loading).await;
+    update_state(state, None, JobState::Transcribing).await;
+    match state.asr.transcribe(audio_path).await {
+        Ok((transcript, benchmark)) => {
+            update_model_state(state, ModelState::Ready).await;
+            let status = update_state(state, None, JobState::Idle).await;
+            data_response(request_id, status, None, Some(transcript), Some(benchmark))
+        }
+        Err(error) => asr_error_response(request_id, state, error).await,
+    }
+}
+
+async fn asr_load(request_id: String, state: &AppState) -> Response {
+    update_model_state(state, ModelState::Loading).await;
+    match state.asr.load().await {
+        Ok(model_load_ms) => {
+            let status = update_model_state(state, ModelState::Ready).await;
+            data_response(
+                request_id,
+                status,
+                None,
+                None,
+                Some(AsrBenchmark {
+                    model_load_ms,
+                    transcribe_ms: 0,
+                    audio_duration_ms: 0,
+                }),
+            )
+        }
+        Err(error) => asr_error_response(request_id, state, error).await,
+    }
+}
+
+async fn asr_unload(request_id: String, state: &AppState) -> Response {
+    match state.asr.unload().await {
+        Ok(()) => {
+            let status = update_model_state(state, ModelState::Unloaded).await;
+            ok_response(request_id, status)
+        }
+        Err(error) => asr_error_response(request_id, state, error).await,
+    }
+}
+
+async fn asr_restart(request_id: String, state: &AppState) -> Response {
+    if let Err(error) = state.asr.unload().await {
+        return asr_error_response(request_id, state, error).await;
+    }
+    asr_load(request_id, state).await
+}
+
+async fn update_model_state(state: &AppState, model_state: ModelState) -> DaemonStatus {
+    let mut status = state.status.write().await;
+    status.final_model_state.clone_from(&model_state);
+    let snapshot = status.clone();
+    let _ = state.events.send(Event::State {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        job_id: snapshot.active_job_id.clone(),
+        job_state: snapshot.job_state.clone(),
+        final_model_state: model_state,
+    });
+    snapshot
+}
+
+async fn asr_error_response(
+    request_id: String,
+    state: &AppState,
+    error: asr::AsrError,
+) -> Response {
+    let message = error.to_string();
+    update_model_state(
+        state,
+        ModelState::Failed {
+            code: "asr_error".into(),
+            message: message.clone(),
+        },
+    )
+    .await;
+    let status = update_state(state, None, JobState::Idle).await;
+    emit_error(state, None, "asr_error", &message);
+    error_response(request_id, "asr_error", &message, Some(status))
 }
 
 async fn toggle(request_id: String, state: &AppState) -> Response {
