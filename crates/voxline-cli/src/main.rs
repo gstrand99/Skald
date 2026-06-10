@@ -32,6 +32,23 @@ enum Commands {
     Stop,
     Cancel,
     Watch,
+    Transcribe {
+        audio_file: std::path::PathBuf,
+        #[arg(long)]
+        no_cleanup: bool,
+    },
+    Asr {
+        #[command(subcommand)]
+        command: AsrCommands,
+    },
+    Bench {
+        #[command(subcommand)]
+        command: BenchCommands,
+    },
+    Vocab {
+        #[command(subcommand)]
+        command: VocabCommands,
+    },
     Record {
         #[arg(long, default_value_t = 5)]
         seconds: u64,
@@ -70,6 +87,38 @@ enum TestCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum AsrCommands {
+    Status,
+    Load,
+    Unload,
+    Restart,
+}
+
+#[derive(Debug, Subcommand)]
+enum BenchCommands {
+    Asr { audio_file: std::path::PathBuf },
+    ModelLoad,
+}
+
+#[derive(Debug, Subcommand)]
+enum VocabCommands {
+    List,
+    Test {
+        text: String,
+    },
+    Add {
+        #[command(subcommand)]
+        command: VocabAddCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum VocabAddCommands {
+    Phrase { text: String },
+    Replace { from: String, to: String },
+}
+
 #[derive(Debug, Serialize)]
 struct DoctorReport {
     environment: voxline_platform::EnvironmentReport,
@@ -82,6 +131,16 @@ struct DoctorReport {
     trigger_mode: &'static str,
     recommended_command: &'static str,
     privacy: PrivacyReport,
+    asr: AsrReport,
+}
+
+#[derive(Debug, Serialize)]
+struct AsrReport {
+    backend: String,
+    model_path: String,
+    model_exists: bool,
+    gpu_requested: bool,
+    lifecycle_mode: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +163,37 @@ async fn main() -> Result<()> {
         Commands::Stop => print_response(&send(Command::Stop).await?),
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
         Commands::Watch => watch().await?,
+        Commands::Transcribe {
+            audio_file,
+            no_cleanup: _,
+        } => print_response(
+            &send(Command::Transcribe {
+                audio_path: audio_file,
+            })
+            .await?,
+        ),
+        Commands::Asr { command } => {
+            let command = match command {
+                AsrCommands::Status => Command::AsrStatus,
+                AsrCommands::Load => Command::AsrLoad,
+                AsrCommands::Unload => Command::AsrUnload,
+                AsrCommands::Restart => Command::AsrRestart,
+            };
+            print_response(&send(command).await?);
+        }
+        Commands::Bench { command } => match command {
+            BenchCommands::Asr { audio_file } => print_response(
+                &send(Command::Transcribe {
+                    audio_path: audio_file,
+                })
+                .await?,
+            ),
+            BenchCommands::ModelLoad => {
+                let _ = send(Command::AsrUnload).await?;
+                print_response(&send(Command::AsrLoad).await?);
+            }
+        },
+        Commands::Vocab { command } => vocab(command)?,
         Commands::Record {
             seconds,
             no_cleanup: _,
@@ -113,6 +203,48 @@ async fn main() -> Result<()> {
         },
         Commands::Doctor { json } => doctor(json).await?,
         Commands::Config { command } => config(&command)?,
+    }
+    Ok(())
+}
+
+fn vocab(command: VocabCommands) -> Result<()> {
+    let mut config = Config::load_or_default()?;
+    match command {
+        VocabCommands::List => {
+            for phrase in config.vocabulary.phrases {
+                println!("{}", phrase.text);
+            }
+            for replacement in config.vocabulary.replacements {
+                println!("{} -> {}", replacement.from, replacement.to);
+            }
+        }
+        VocabCommands::Test { text } => {
+            let mut output = text;
+            for replacement in config.vocabulary.replacements {
+                output = output.replace(&replacement.from, &replacement.to);
+            }
+            println!("{output}");
+        }
+        VocabCommands::Add { command } => {
+            match command {
+                VocabAddCommands::Phrase { text } => {
+                    config
+                        .vocabulary
+                        .phrases
+                        .push(voxline_core::config::VocabularyPhrase { text });
+                }
+                VocabAddCommands::Replace { from, to } => {
+                    config.vocabulary.replacements.push(
+                        voxline_core::config::VocabularyReplacement {
+                            from,
+                            to,
+                            case_sensitive: false,
+                        },
+                    );
+                }
+            }
+            println!("{}", config.save()?.display());
+        }
     }
     Ok(())
 }
@@ -222,6 +354,7 @@ async fn doctor(json: bool) -> Result<()> {
         Some(path) => UnixStream::connect(path).await.is_ok(),
         None => false,
     };
+    let model_path = expand_home(&config.asr.model_path);
     let report = DoctorReport {
         environment: voxline_platform::environment_report(),
         config_path: Config::path()?.display().to_string(),
@@ -238,6 +371,13 @@ async fn doctor(json: bool) -> Result<()> {
             store_raw_transcript: config.privacy.store_raw_transcript,
             store_cleaned_transcript: config.privacy.store_cleaned_transcript,
             log_transcripts: config.privacy.log_transcripts,
+        },
+        asr: AsrReport {
+            backend: config.asr.backend.clone(),
+            model_path: model_path.display().to_string(),
+            model_exists: model_path.is_file(),
+            gpu_requested: config.asr.gpu,
+            lifecycle_mode: config.asr.lifecycle.mode.clone(),
         },
     };
     if json {
@@ -284,8 +424,23 @@ fn print_doctor(report: &DoctorReport) {
         "  Log transcripts: {}",
         yes_no(report.privacy.log_transcripts)
     );
+    println!("ASR:");
+    println!("  Backend: {}", report.asr.backend);
+    println!("  Model: {}", report.asr.model_path);
+    println!("  Model exists: {}", yes_no(report.asr.model_exists));
+    println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
+    println!("  Lifecycle: {}", report.asr.lifecycle_mode);
 }
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+fn expand_home(path: &str) -> std::path::PathBuf {
+    if let Some(relative) = path.strip_prefix("~/")
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.join(relative);
+    }
+    std::path::PathBuf::from(path)
 }
