@@ -111,6 +111,15 @@ pub struct AsrBenchmark {
     pub audio_duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DictationResult {
+    pub job_id: JobId,
+    pub transcript: Transcript,
+    pub benchmark: AsrBenchmark,
+    pub total_ms: u64,
+    pub copied_to_clipboard: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
@@ -177,6 +186,11 @@ pub enum Event {
         timestamp_ms: u64,
         job_id: Option<JobId>,
         error: ProtocolError,
+    },
+    Result {
+        protocol_version: u32,
+        timestamp_ms: u64,
+        result: DictationResult,
     },
 }
 

@@ -8,7 +8,7 @@ build:
     cargo build --workspace
 
 # Run the daemon in the foreground.
-daemon: build
+daemon: build-cuda
     target/debug/voxlined --foreground
 
 # Record from the default microphone for the given number of seconds.
@@ -22,6 +22,10 @@ start: build
 # Stop a manual recording and print the WAV path and metrics.
 stop: build
     target/debug/voxline stop
+
+# Toggle recording; the stop toggle transcribes and copies the result.
+toggle: build-cuda
+    target/debug/voxline toggle
 
 # Cancel a manual recording without retaining a WAV.
 cancel: build
