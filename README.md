@@ -21,6 +21,26 @@ just test-paste
 just doctor
 ```
 
+## Service and shortcuts
+
+Install the user-session daemon:
+
+```bash
+voxline service install
+systemctl --user start voxlined
+```
+
+`voxline service install` writes `~/.config/systemd/user/voxlined.service`, enables
+it, and prints shortcut binding examples for your desktop session.
+
+Bind an external shortcut to `voxline toggle` (or use `voxline start` /
+`voxline stop` / `voxline ptt-start` / `voxline ptt-stop` for push-to-talk where
+your compositor supports key-release bindings).
+
+On Hyprland and Sway, import the graphical session environment into systemd
+before starting the service. `voxline service install` and `voxline doctor`
+print the recommended `systemctl --user import-environment` lines.
+
 ## Paste Safety
 
 Safe paste is supported on X11 with `xdotool`, on Omarchy/Hyprland through the
