@@ -2,9 +2,11 @@ use std::{
     env,
     io::Write,
     process::{Command, Stdio},
+    thread,
+    time::Duration,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,6 +27,68 @@ pub enum PlatformError {
     StdinUnavailable { tool: &'static str },
     #[error("{tool} exited unsuccessfully")]
     Failed { tool: &'static str },
+    #[error("failed to decode {tool} output: {message}")]
+    InvalidOutput { tool: &'static str, message: String },
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetBackend {
+    X11,
+    Hyprland,
+    Sway,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct TargetContext {
+    pub backend: TargetBackend,
+    pub id: String,
+    pub app_id: Option<String>,
+    pub title: Option<String>,
+}
+
+impl TargetContext {
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        const TERMINALS: &[&str] = &[
+            "alacritty",
+            "com.mitchellh.ghostty",
+            "foot",
+            "ghostty",
+            "kitty",
+            "konsole",
+            "org.wezfurlong.wezterm",
+            "terminal",
+            "wezterm",
+            "xterm",
+        ];
+        self.app_id.as_deref().is_some_and(|app_id| {
+            let normalized = app_id.to_ascii_lowercase();
+            TERMINALS
+                .iter()
+                .any(|terminal| normalized.contains(terminal))
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PasteReport {
+    pub clipboard_available: bool,
+    pub paste_available: bool,
+    pub target_detection_available: bool,
+    pub backend: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteBackend {
+    X11,
+    Hyprland,
+    Wtype,
+}
+
+pub struct ClipboardSnapshot {
+    text: Option<String>,
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
@@ -56,12 +120,248 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
     }
 }
 
+pub fn read_clipboard() -> Result<String, PlatformError> {
+    let (tool, args): (&'static str, &[&str]) = if command_exists("wl-paste") {
+        ("wl-paste", &["--no-newline"])
+    } else if command_exists("xclip") {
+        ("xclip", &["-selection", "clipboard", "-o"])
+    } else {
+        return Err(PlatformError::ClipboardUnavailable);
+    };
+    let output = Command::new(tool)
+        .args(args)
+        .output()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    if !output.status.success() {
+        return Err(PlatformError::Failed { tool });
+    }
+    String::from_utf8(output.stdout).map_err(|error| PlatformError::InvalidOutput {
+        tool,
+        message: error.to_string(),
+    })
+}
+
+#[must_use]
+pub fn save_clipboard() -> ClipboardSnapshot {
+    ClipboardSnapshot {
+        text: read_clipboard().ok(),
+    }
+}
+
+pub fn restore_clipboard(snapshot: ClipboardSnapshot) -> Result<(), PlatformError> {
+    if let Some(text) = snapshot.text {
+        copy_to_clipboard(&text)?;
+    }
+    Ok(())
+}
+
+#[must_use]
+pub fn capture_active_target() -> Option<TargetContext> {
+    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let desktop = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if session == "x11" {
+        return capture_x11_target();
+    }
+    if desktop.contains("hyprland") {
+        return capture_hyprland_target();
+    }
+    if desktop.contains("sway") {
+        return capture_sway_target();
+    }
+    None
+}
+
+#[must_use]
+pub fn paste_backend() -> Option<PasteBackend> {
+    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let desktop = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if session == "x11" && command_exists("xdotool") {
+        Some(PasteBackend::X11)
+    } else if desktop.contains("hyprland") && command_exists("hyprctl") {
+        Some(PasteBackend::Hyprland)
+    } else if desktop.contains("sway") && command_exists("wtype") {
+        Some(PasteBackend::Wtype)
+    } else {
+        None
+    }
+}
+
+pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
+    let (tool, args): (&'static str, &[&str]) = match backend {
+        PasteBackend::X11 => ("xdotool", &["key", "--clearmodifiers", "ctrl+v"]),
+        PasteBackend::Hyprland => (
+            "hyprctl",
+            &["dispatch", "sendshortcut", "SHIFT,Insert,activewindow"],
+        ),
+        PasteBackend::Wtype => ("wtype", &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
+    };
+    let status = Command::new(tool)
+        .args(args)
+        .status()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(PlatformError::Failed { tool })
+    }
+}
+
+pub fn wait_for_clipboard(delay_ms: u64) {
+    thread::sleep(Duration::from_millis(delay_ms));
+}
+
+#[must_use]
+pub fn classify_paste_backend(session_type: &str, desktop: &str) -> &'static str {
+    let desktop = desktop.to_ascii_lowercase();
+    if session_type == "x11" {
+        "x11"
+    } else if desktop.contains("hyprland") {
+        "hyprland"
+    } else if desktop.contains("sway") {
+        "sway"
+    } else if desktop.contains("gnome") {
+        "gnome_wayland"
+    } else if desktop.contains("kde") {
+        "kde_wayland"
+    } else {
+        "unknown"
+    }
+}
+
+#[must_use]
+pub fn paste_reason_for_backend(
+    backend: &str,
+    paste_available: bool,
+    target_detection_available: bool,
+) -> String {
+    match backend {
+        "gnome_wayland" => "GNOME Wayland defaults to clipboard-only".into(),
+        "kde_wayland" => "KDE Wayland defaults to clipboard-only".into(),
+        _ if paste_available && target_detection_available => {
+            "safe paste is available when the active target remains stable".into()
+        }
+        _ if !paste_available => "no supported paste tool is available".into(),
+        _ => "active target detection is unavailable".into(),
+    }
+}
+
+#[must_use]
+pub fn paste_report() -> PasteReport {
+    let environment = environment_report();
+    let desktop = environment.desktop.as_deref().unwrap_or("unknown");
+    let session = environment.session_type.as_deref().unwrap_or("unknown");
+    let clipboard_available = command_exists("wl-copy") || command_exists("xclip");
+    let backend = classify_paste_backend(session, desktop);
+    let paste_available = paste_backend().is_some();
+    let target_detection_available = capture_active_target().is_some();
+    let reason = paste_reason_for_backend(backend, paste_available, target_detection_available);
+    PasteReport {
+        clipboard_available,
+        paste_available,
+        target_detection_available,
+        backend: backend.into(),
+        reason,
+    }
+}
+
 pub fn notify(summary: &str, body: &str) {
     if command_exists("notify-send")
         && let Err(error) = Command::new("notify-send").args([summary, body]).spawn()
     {
         tracing::warn!(%error, "failed to start notify-send");
     }
+}
+
+#[derive(Deserialize)]
+struct HyprlandWindow {
+    address: String,
+    class: String,
+    title: String,
+}
+
+fn capture_hyprland_target() -> Option<TargetContext> {
+    let output = Command::new("hyprctl")
+        .args(["activewindow", "-j"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let window: HyprlandWindow = serde_json::from_slice(&output.stdout).ok()?;
+    (!window.address.is_empty()).then(|| TargetContext {
+        backend: TargetBackend::Hyprland,
+        id: window.address,
+        app_id: (!window.class.is_empty()).then_some(window.class),
+        title: (!window.title.is_empty()).then_some(window.title),
+    })
+}
+
+fn capture_x11_target() -> Option<TargetContext> {
+    let id = command_stdout("xdotool", &["getactivewindow"])?;
+    let title = command_stdout("xdotool", &["getwindowname", &id]);
+    let pid = command_stdout("xdotool", &["getwindowpid", &id]);
+    Some(TargetContext {
+        backend: TargetBackend::X11,
+        id,
+        app_id: pid,
+        title,
+    })
+}
+
+fn capture_sway_target() -> Option<TargetContext> {
+    let output = Command::new("swaymsg")
+        .args(["-t", "get_tree", "-r"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let tree: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let focused = find_focused(&tree)?;
+    Some(TargetContext {
+        backend: TargetBackend::Sway,
+        id: focused.get("id")?.to_string(),
+        app_id: focused
+            .get("app_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        title: focused
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+fn find_focused(value: &serde_json::Value) -> Option<&serde_json::Value> {
+    if value.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Some(value);
+    }
+    for key in ["nodes", "floating_nodes"] {
+        for child in value
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(focused) = find_focused(child) {
+                return Some(focused);
+            }
+        }
+    }
+    None
+}
+
+fn command_stdout(tool: &'static str, args: &[&str]) -> Option<String> {
+    let output = Command::new(tool).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!text.is_empty()).then_some(text)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,4 +418,58 @@ fn command_exists(name: &str) -> bool {
         .args(["-c", "command -v \"$1\" >/dev/null 2>&1", "sh", name])
         .status()
         .is_ok_and(|status| status.success())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_a_focused_node_in_nested_sway_tree() {
+        let tree = serde_json::json!({
+            "focused": false,
+            "nodes": [{
+                "focused": false,
+                "nodes": [{
+                    "focused": true,
+                    "id": 42,
+                    "app_id": "terminal",
+                    "name": "shell"
+                }]
+            }]
+        });
+        assert_eq!(
+            find_focused(&tree).and_then(|node| node["id"].as_u64()),
+            Some(42)
+        );
+    }
+
+    #[test]
+    fn identifies_known_terminal_application_ids() {
+        let target = TargetContext {
+            backend: TargetBackend::Hyprland,
+            id: "0x1".into(),
+            app_id: Some("com.mitchellh.ghostty".into()),
+            title: None,
+        };
+        assert!(target.is_terminal());
+    }
+
+    #[test]
+    fn classifies_kde_wayland_backend() {
+        assert_eq!(classify_paste_backend("wayland", "KDE"), "kde_wayland");
+        assert_eq!(
+            paste_reason_for_backend("kde_wayland", false, false),
+            "KDE Wayland defaults to clipboard-only"
+        );
+    }
+
+    #[test]
+    fn classifies_gnome_wayland_backend() {
+        assert_eq!(classify_paste_backend("wayland", "GNOME"), "gnome_wayland");
+        assert_eq!(
+            paste_reason_for_backend("gnome_wayland", false, false),
+            "GNOME Wayland defaults to clipboard-only"
+        );
+    }
 }
