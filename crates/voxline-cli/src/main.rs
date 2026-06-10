@@ -1,3 +1,5 @@
+mod service;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -9,8 +11,11 @@ use tokio::{
 };
 use voxline_core::{
     config::Config,
-    protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response},
+    protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
     runtime::{runtime_dir, socket_path, verify_mode},
+};
+use voxline_platform::{
+    SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance,
 };
 
 #[derive(Debug, Parser)]
@@ -29,7 +34,11 @@ enum Commands {
     Status,
     Toggle,
     Start,
+    #[command(name = "ptt-start")]
+    PttStart,
     Stop,
+    #[command(name = "ptt-stop")]
+    PttStop,
     Cancel,
     Watch,
     Transcribe {
@@ -67,6 +76,19 @@ enum Commands {
         #[command(subcommand)]
         command: ConfigCommands,
     },
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServiceCommands {
+    Install,
+    Uninstall,
+    Start,
+    Stop,
+    Status,
 }
 
 #[derive(Debug, Subcommand)]
@@ -132,6 +154,10 @@ struct DoctorReport {
     daemon_reachable: bool,
     trigger_mode: &'static str,
     recommended_command: &'static str,
+    push_to_talk_note: String,
+    binding_examples: Vec<String>,
+    daemon_environment: Option<SessionEnvironmentSnapshot>,
+    environment_mismatch: Option<String>,
     privacy: PrivacyReport,
     asr: AsrReport,
     paste: voxline_platform::PasteReport,
@@ -162,8 +188,8 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Status => print_response(&send(Command::Status).await?),
         Commands::Toggle => print_response(&send(Command::Toggle).await?),
-        Commands::Start => print_response(&send(Command::Start).await?),
-        Commands::Stop => print_response(&send(Command::Stop).await?),
+        Commands::Start | Commands::PttStart => print_response(&send(Command::Start).await?),
+        Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?),
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
         Commands::Watch => watch().await?,
         Commands::Transcribe {
@@ -208,6 +234,7 @@ async fn main() -> Result<()> {
         },
         Commands::Doctor { json } => doctor(json).await?,
         Commands::Config { command } => config(&command)?,
+        Commands::Service { command } => service_command(&command)?,
     }
     Ok(())
 }
@@ -268,6 +295,19 @@ async fn record(seconds: u64) -> Result<()> {
         bail!("recording did not stop cleanly");
     }
     Ok(())
+}
+
+fn service_command(command: &ServiceCommands) -> Result<()> {
+    match command {
+        ServiceCommands::Install => {
+            let config = Config::load_or_default()?;
+            service::install(&config.daemon.log_level)
+        }
+        ServiceCommands::Uninstall => service::uninstall(),
+        ServiceCommands::Start => service::start(),
+        ServiceCommands::Stop => service::stop(),
+        ServiceCommands::Status => service::status(),
+    }
 }
 
 fn config(command: &ConfigCommands) -> Result<()> {
@@ -359,9 +399,22 @@ async fn doctor(json: bool) -> Result<()> {
         Some(path) => UnixStream::connect(path).await.is_ok(),
         None => false,
     };
+    let cli_environment = voxline_platform::environment_report();
+    let cli_snapshot = SessionEnvironmentSnapshot::from(&cli_environment);
+    let daemon_environment = if daemon_reachable {
+        fetch_daemon_environment().await
+    } else {
+        None
+    };
+    let environment_mismatch = daemon_environment
+        .as_ref()
+        .and_then(|daemon| session_environment_mismatch(&cli_snapshot, daemon));
+    let session = cli_environment.session_type.as_deref().unwrap_or("unknown");
+    let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
+    let trigger = trigger_guidance(session, desktop);
     let model_path = expand_home(&config.asr.model_path);
     let report = DoctorReport {
-        environment: voxline_platform::environment_report(),
+        environment: cli_environment,
         config_path: Config::path()?.display().to_string(),
         config_valid,
         runtime_dir: runtime.as_ref().map(|path| path.display().to_string()),
@@ -369,7 +422,11 @@ async fn doctor(json: bool) -> Result<()> {
         socket_path: socket.as_ref().map(|path| path.display().to_string()),
         daemon_reachable,
         trigger_mode: "external shortcut",
-        recommended_command: "voxline toggle",
+        recommended_command: trigger.recommended_command,
+        push_to_talk_note: trigger.push_to_talk_note.into(),
+        binding_examples: trigger.binding_examples,
+        daemon_environment,
+        environment_mismatch,
         privacy: PrivacyReport {
             cleanup_enabled: config.cleanup.enabled,
             store_audio: config.privacy.store_audio,
@@ -416,6 +473,37 @@ fn print_doctor(report: &DoctorReport) {
     println!("Daemon reachable: {}", yes_no(report.daemon_reachable));
     println!("Trigger mode: {}", report.trigger_mode);
     println!("Recommended command: {}", report.recommended_command);
+    println!("Push-to-talk: {}", report.push_to_talk_note);
+    for line in &report.binding_examples {
+        println!("  {line}");
+    }
+    if let Some(daemon) = &report.daemon_environment {
+        println!("Daemon environment:");
+        println!(
+            "  Session: {}",
+            daemon.session_type.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  Desktop: {}",
+            daemon.desktop.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "  Wayland display: {}",
+            yes_no(daemon.wayland_display_present)
+        );
+        println!("  DISPLAY: {}", yes_no(daemon.display_present));
+        println!(
+            "  D-Bus session: {}",
+            yes_no(daemon.dbus_session_bus_present)
+        );
+        println!(
+            "  XDG runtime dir: {}",
+            yes_no(daemon.xdg_runtime_dir_present)
+        );
+    }
+    if let Some(message) = &report.environment_mismatch {
+        println!("Environment warning: {message}");
+    }
     println!("Tools:");
     for tool in &report.environment.tools {
         println!("  {:<12} {}", tool.name, yes_no(tool.available));
@@ -455,6 +543,26 @@ fn print_doctor(report: &DoctorReport) {
 
 fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
+}
+
+async fn fetch_daemon_environment() -> Option<SessionEnvironmentSnapshot> {
+    let response = send(Command::DaemonEnvironment).await.ok()?;
+    response
+        .session_environment
+        .map(session_environment_from_protocol)
+}
+
+fn session_environment_from_protocol(
+    environment: SessionEnvironment,
+) -> SessionEnvironmentSnapshot {
+    SessionEnvironmentSnapshot {
+        session_type: environment.session_type,
+        desktop: environment.desktop,
+        wayland_display_present: environment.wayland_display_present,
+        display_present: environment.display_present,
+        dbus_session_bus_present: environment.dbus_session_bus_present,
+        xdg_runtime_dir_present: environment.xdg_runtime_dir_present,
+    }
 }
 
 fn expand_home(path: &str) -> std::path::PathBuf {
