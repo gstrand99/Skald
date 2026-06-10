@@ -2,9 +2,10 @@ mod asr;
 mod audio;
 
 use std::{
+    fs,
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -18,10 +19,10 @@ use tokio::{
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use voxline_core::{
-    config::Config,
+    config::{AudioGatesConfig, Config, InjectionConfig, NotificationsConfig, PrivacyConfig},
     protocol::{
-        AsrBenchmark, AudioRecording, Command, DaemonStatus, Event, JobId, JobState, ModelState,
-        PROTOCOL_VERSION, ProtocolError, Request, Response, Transcript,
+        AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
+        JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response, Transcript,
     },
     runtime::{ensure_runtime_dir, socket_path},
 };
@@ -38,6 +39,10 @@ struct AppState {
     events: broadcast::Sender<Event>,
     audio: audio::AudioRecorder,
     asr: asr::AsrManager,
+    audio_gates: AudioGatesConfig,
+    injection: InjectionConfig,
+    notifications: NotificationsConfig,
+    privacy: PrivacyConfig,
 }
 
 #[tokio::main]
@@ -58,6 +63,7 @@ async fn main() -> Result<()> {
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to bind {}", socket.display()))?;
     let (events, _) = broadcast::channel(32);
+    let audio_gates = config.audio.gates.clone();
     let state = Arc::new(AppState {
         status: RwLock::new(DaemonStatus {
             cleanup_enabled: config.cleanup.enabled,
@@ -67,6 +73,10 @@ async fn main() -> Result<()> {
         events,
         audio: audio::AudioRecorder::spawn(config.audio),
         asr: asr::AsrManager::spawn(config.asr, config.vocabulary),
+        audio_gates,
+        injection: config.injection,
+        notifications: config.notifications,
+        privacy: config.privacy,
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -309,7 +319,8 @@ async fn asr_error_response(
 }
 
 async fn toggle(request_id: String, state: &AppState) -> Response {
-    match state.status.read().await.job_state {
+    let job_state = state.status.read().await.job_state.clone();
+    match job_state {
         JobState::Idle => start(request_id, state).await,
         JobState::Recording => stop(request_id, state).await,
         _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
@@ -331,6 +342,7 @@ async fn start(request_id: String, state: &AppState) -> Response {
 }
 
 async fn stop(request_id: String, state: &AppState) -> Response {
+    let started = Instant::now();
     let job_id = {
         let status = state.status.read().await;
         if status.job_state != JobState::Recording {
@@ -350,11 +362,124 @@ async fn stop(request_id: String, state: &AppState) -> Response {
     };
     update_state(state, Some(job_id.clone()), JobState::Stopping).await;
     match state.audio.stop(job_id).await {
-        Ok(recording) => {
-            let status = update_state(state, None, JobState::Idle).await;
-            success_response(request_id, status, Some(recording))
-        }
+        Ok(recording) => finish_dictation(request_id, state, recording, started).await,
         Err(error) => audio_error_response(request_id, state, error).await,
+    }
+}
+
+async fn finish_dictation(
+    request_id: String,
+    state: &AppState,
+    recording: AudioRecording,
+    started: Instant,
+) -> Response {
+    let _audio_cleanup = TemporaryAudio::new(recording.wav_path.clone(), state.privacy.store_audio);
+    if !recording.speech_detected {
+        if state.notifications.enabled && state.audio_gates.notify_on_no_speech {
+            voxline_platform::notify("VoxLine", "No speech detected");
+        }
+        let status = update_state(state, None, JobState::Idle).await;
+        return error_response(
+            request_id,
+            "no_speech",
+            "recording was too short or quiet to transcribe",
+            Some(status),
+        );
+    }
+
+    update_model_state(state, ModelState::Loading).await;
+    update_state(
+        state,
+        Some(recording.job_id.clone()),
+        JobState::Transcribing,
+    )
+    .await;
+    let (transcript, benchmark) = match state.asr.transcribe(recording.wav_path.clone()).await {
+        Ok(result) => result,
+        Err(error) => return asr_error_response(request_id, state, error).await,
+    };
+    update_model_state(state, ModelState::Ready).await;
+    if transcript.text.trim().is_empty() {
+        if state.notifications.enabled {
+            voxline_platform::notify("VoxLine", "No speech recognized");
+        }
+        let status = update_state(state, None, JobState::Idle).await;
+        return error_response(
+            request_id,
+            "empty_transcript",
+            "transcription produced no usable text",
+            Some(status),
+        );
+    }
+
+    let copied_to_clipboard = if state.injection.copy_to_clipboard {
+        update_state(state, Some(recording.job_id.clone()), JobState::Copying).await;
+        if let Err(error) = voxline_platform::copy_to_clipboard(&transcript.text) {
+            let message = error.to_string();
+            if state.notifications.enabled {
+                voxline_platform::notify("VoxLine clipboard failed", &message);
+            }
+            let status = update_state(state, None, JobState::Idle).await;
+            emit_error(state, Some(recording.job_id), "clipboard_error", &message);
+            return error_response(request_id, "clipboard_error", &message, Some(status));
+        }
+        true
+    } else {
+        false
+    };
+
+    let result = DictationResult {
+        job_id: recording.job_id.clone(),
+        transcript: transcript.clone(),
+        benchmark: benchmark.clone(),
+        total_ms: elapsed_ms(started),
+        copied_to_clipboard,
+    };
+    let _ = state.events.send(Event::Result {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        result,
+    });
+    if state.notifications.enabled {
+        voxline_platform::notify(
+            "VoxLine",
+            if copied_to_clipboard {
+                "Transcript copied to clipboard"
+            } else {
+                "Transcription complete"
+            },
+        );
+    }
+    update_state(state, Some(recording.job_id.clone()), JobState::Done).await;
+    let status = update_state(state, None, JobState::Idle).await;
+    data_response(
+        request_id,
+        status,
+        Some(recording),
+        Some(transcript),
+        Some(benchmark),
+    )
+}
+
+struct TemporaryAudio {
+    path: std::path::PathBuf,
+    retain: bool,
+}
+
+impl TemporaryAudio {
+    fn new(path: std::path::PathBuf, retain: bool) -> Self {
+        Self { path, retain }
+    }
+}
+
+impl Drop for TemporaryAudio {
+    fn drop(&mut self) {
+        if !self.retain
+            && let Err(error) = fs::remove_file(&self.path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(path = %self.path.display(), %error, "failed to delete temporary audio");
+        }
     }
 }
 
@@ -465,4 +590,8 @@ fn now_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
