@@ -26,7 +26,8 @@ use voxline_core::{
     },
     protocol::{
         AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
-        JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response, Transcript,
+        JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response,
+        SessionEnvironment, Transcript,
     },
     runtime::{ensure_runtime_dir, socket_path},
 };
@@ -142,6 +143,7 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
                         code: "invalid_request".into(),
                         message: error.to_string(),
                     }),
+                    session_environment: None,
                 };
                 write_json_line(&mut writer, &response).await?;
                 continue;
@@ -186,7 +188,36 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::AsrRestart => asr_restart(request.request_id, state).await,
         Command::TestClipboard => test_clipboard(request.request_id, state).await,
         Command::TestPaste => test_paste(request.request_id, state).await,
+        Command::DaemonEnvironment => {
+            daemon_environment_response(request.request_id, state.status.read().await.clone())
+        }
         Command::Subscribe { .. } => unreachable!("subscribe handled before dispatch"),
+    }
+}
+
+fn daemon_environment_response(request_id: String, status: DaemonStatus) -> Response {
+    Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id,
+        ok: true,
+        status: Some(status),
+        recording: None,
+        transcript: None,
+        benchmark: None,
+        error: None,
+        session_environment: Some(current_session_environment()),
+    }
+}
+
+fn current_session_environment() -> SessionEnvironment {
+    let report = voxline_platform::environment_report();
+    SessionEnvironment {
+        session_type: report.session_type,
+        desktop: report.desktop,
+        wayland_display_present: report.wayland_display_present,
+        display_present: report.display_present,
+        dbus_session_bus_present: report.dbus_session_bus_present,
+        xdg_runtime_dir_present: report.xdg_runtime_dir_present,
     }
 }
 
@@ -218,6 +249,7 @@ fn data_response(
         transcript,
         benchmark,
         error: None,
+        session_environment: None,
     }
 }
 
@@ -239,6 +271,7 @@ fn error_response(
             code: code.into(),
             message: message.into(),
         }),
+        session_environment: None,
     }
 }
 

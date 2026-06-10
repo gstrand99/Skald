@@ -47,6 +47,22 @@ test-paste: build
 doctor: build
     target/debug/voxline doctor
 
+# Install the systemd user service and print shortcut guidance.
+service-install: build-cuda
+    target/debug/voxline service install
+
+# Show systemd user service status.
+service-status: build-cuda
+    target/debug/voxline service status
+
+# Start the systemd user service.
+service-start: build-cuda
+    target/debug/voxline service start
+
+# Stop the systemd user service.
+service-stop: build-cuda
+    target/debug/voxline service stop
+
 # Validate a generated WAV file.
 inspect wav:
     file {{wav}}

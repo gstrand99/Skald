@@ -268,6 +268,116 @@ pub fn paste_report() -> PasteReport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SessionEnvironmentSnapshot {
+    pub session_type: Option<String>,
+    pub desktop: Option<String>,
+    pub wayland_display_present: bool,
+    pub display_present: bool,
+    pub dbus_session_bus_present: bool,
+    pub xdg_runtime_dir_present: bool,
+}
+
+impl From<EnvironmentReport> for SessionEnvironmentSnapshot {
+    fn from(report: EnvironmentReport) -> Self {
+        Self {
+            session_type: report.session_type,
+            desktop: report.desktop,
+            wayland_display_present: report.wayland_display_present,
+            display_present: report.display_present,
+            dbus_session_bus_present: report.dbus_session_bus_present,
+            xdg_runtime_dir_present: report.xdg_runtime_dir_present,
+        }
+    }
+}
+
+impl From<&EnvironmentReport> for SessionEnvironmentSnapshot {
+    fn from(report: &EnvironmentReport) -> Self {
+        Self {
+            session_type: report.session_type.clone(),
+            desktop: report.desktop.clone(),
+            wayland_display_present: report.wayland_display_present,
+            display_present: report.display_present,
+            dbus_session_bus_present: report.dbus_session_bus_present,
+            xdg_runtime_dir_present: report.xdg_runtime_dir_present,
+        }
+    }
+}
+
+#[must_use]
+pub fn session_environment_mismatch(
+    cli: &SessionEnvironmentSnapshot,
+    daemon: &SessionEnvironmentSnapshot,
+) -> Option<String> {
+    let cli_has_display = cli.display_present || cli.wayland_display_present;
+    let daemon_has_display = daemon.display_present || daemon.wayland_display_present;
+    if cli_has_display && !daemon_has_display {
+        return Some("Likely systemd user environment import problem.".into());
+    }
+    if cli.dbus_session_bus_present && !daemon.dbus_session_bus_present {
+        return Some("Daemon is missing DBUS_SESSION_BUS_ADDRESS.".into());
+    }
+    if cli.xdg_runtime_dir_present && !daemon.xdg_runtime_dir_present {
+        return Some("Daemon is missing XDG_RUNTIME_DIR.".into());
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriggerGuidance {
+    pub recommended_command: &'static str,
+    pub push_to_talk_note: &'static str,
+    pub binding_examples: Vec<String>,
+    pub environment_import: Vec<String>,
+}
+
+#[must_use]
+pub fn trigger_guidance(session_type: &str, desktop: &str) -> TriggerGuidance {
+    let desktop = desktop.to_ascii_lowercase();
+    let mut binding_examples = Vec::new();
+    let mut environment_import = Vec::new();
+
+    if desktop.contains("gnome") {
+        binding_examples.push("GNOME Settings -> Keyboard -> Custom Shortcuts".into());
+        binding_examples.push("Name: VoxLine Toggle".into());
+        binding_examples.push("Command: voxline toggle".into());
+    } else if desktop.contains("kde") {
+        binding_examples.push("System Settings -> Shortcuts -> Custom Shortcut".into());
+        binding_examples.push("Command/URL: voxline toggle".into());
+    } else if desktop.contains("hyprland") {
+        binding_examples.push("bind = $mainMod, SPACE, exec, voxline toggle".into());
+        binding_examples.push("bind = $mainMod, V, exec, voxline start".into());
+        binding_examples.push("bindr = $mainMod, V, exec, voxline stop".into());
+        environment_import.push(
+            "exec-once = systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS".into(),
+        );
+        environment_import.push("exec-once = systemctl --user start voxlined".into());
+    } else if desktop.contains("sway") {
+        binding_examples.push("bindsym $mod+space exec voxline toggle".into());
+        binding_examples.push("bindsym $mod+v exec voxline start".into());
+        binding_examples.push("bindsym --release $mod+v exec voxline stop".into());
+        environment_import.push(
+            "exec systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS".into(),
+        );
+        environment_import.push("exec systemctl --user start voxlined".into());
+    } else if session_type == "x11" {
+        binding_examples.push("Bind a desktop shortcut to: voxline toggle".into());
+    } else {
+        binding_examples.push("Bind an external shortcut to: voxline toggle".into());
+        environment_import.push(
+            "Ensure the user service inherits WAYLAND_DISPLAY, DISPLAY, XDG_CURRENT_DESKTOP, and DBUS_SESSION_BUS_ADDRESS".into(),
+        );
+    }
+
+    TriggerGuidance {
+        recommended_command: "voxline toggle",
+        push_to_talk_note: "Push-to-talk is available when your compositor supports key-release bindings (voxline start / voxline stop).",
+        binding_examples,
+        environment_import,
+    }
+}
+
 pub fn notify(summary: &str, body: &str) {
     if command_exists("notify-send")
         && let Err(error) = Command::new("notify-send").args([summary, body]).spawn()
@@ -470,6 +580,46 @@ mod tests {
         assert_eq!(
             paste_reason_for_backend("gnome_wayland", false, false),
             "GNOME Wayland defaults to clipboard-only"
+        );
+    }
+
+    #[test]
+    fn detects_daemon_display_import_problem() {
+        let cli = SessionEnvironmentSnapshot {
+            session_type: Some("wayland".into()),
+            desktop: Some("Hyprland".into()),
+            wayland_display_present: true,
+            display_present: false,
+            dbus_session_bus_present: true,
+            xdg_runtime_dir_present: true,
+        };
+        let daemon = SessionEnvironmentSnapshot {
+            wayland_display_present: false,
+            display_present: false,
+            dbus_session_bus_present: true,
+            xdg_runtime_dir_present: true,
+            ..cli.clone()
+        };
+        assert_eq!(
+            session_environment_mismatch(&cli, &daemon),
+            Some("Likely systemd user environment import problem.".into())
+        );
+    }
+
+    #[test]
+    fn hyprland_trigger_guidance_includes_environment_import() {
+        let guidance = trigger_guidance("wayland", "Hyprland");
+        assert!(
+            guidance
+                .environment_import
+                .iter()
+                .any(|line| line.contains("import-environment"))
+        );
+        assert!(
+            guidance
+                .binding_examples
+                .iter()
+                .any(|line| line.contains("voxline toggle"))
         );
     }
 }
