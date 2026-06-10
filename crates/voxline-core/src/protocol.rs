@@ -37,7 +37,19 @@ pub enum Command {
     AsrRestart,
     TestClipboard,
     TestPaste,
+    DaemonEnvironment,
     Subscribe { events: Vec<EventKind> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct SessionEnvironment {
+    pub session_type: Option<String>,
+    pub desktop: Option<String>,
+    pub wayland_display_present: bool,
+    pub display_present: bool,
+    pub dbus_session_bus_present: bool,
+    pub xdg_runtime_dir_present: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -71,6 +83,8 @@ pub struct Response {
     pub benchmark: Option<AsrBenchmark>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ProtocolError>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_environment: Option<SessionEnvironment>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
