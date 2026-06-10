@@ -39,9 +39,32 @@ inspect wav:
 play wav:
     pw-play {{wav}}
 
+# Transcribe a 16 kHz mono WAV through the running daemon.
+transcribe wav: build
+    target/debug/voxline transcribe {{wav}} --no-cleanup
+
+# Load the configured ASR model.
+asr-load: build
+    target/debug/voxline asr load
+
+# Show ASR model state.
+asr-status: build
+    target/debug/voxline asr status
+
+# Benchmark transcription for a WAV file.
+bench-asr wav: build
+    target/debug/voxline bench asr {{wav}}
+
+# Benchmark loading the configured ASR model.
+bench-model-load: build
+    target/debug/voxline bench model-load
+
+# Build the daemon with CUDA-enabled whisper-rs.
+build-cuda:
+    cargo build -p voxlined --no-default-features --features asr-whisper-rs-cuda
+
 # Run formatting, linting, and tests.
 check:
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
-

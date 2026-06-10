@@ -88,6 +88,7 @@ pub struct AsrConfig {
     pub gpu: bool,
     pub gpu_backend: String,
     pub lifecycle: AsrLifecycleConfig,
+    pub hallucination_filter: HallucinationFilterConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -104,6 +105,28 @@ pub struct VocabularyConfig {
     pub enabled: bool,
     pub initial_prompt_enabled: bool,
     pub post_replace_enabled: bool,
+    pub phrases: Vec<VocabularyPhrase>,
+    pub replacements: Vec<VocabularyReplacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VocabularyPhrase {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VocabularyReplacement {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub case_sensitive: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct HallucinationFilterConfig {
+    pub enabled: bool,
+    pub phrases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -206,6 +229,7 @@ impl Default for AsrConfig {
             gpu: true,
             gpu_backend: "cuda".into(),
             lifecycle: AsrLifecycleConfig::default(),
+            hallucination_filter: HallucinationFilterConfig::default(),
         }
     }
 }
@@ -224,6 +248,43 @@ impl Default for VocabularyConfig {
             enabled: true,
             initial_prompt_enabled: true,
             post_replace_enabled: true,
+            phrases: vec![
+                VocabularyPhrase {
+                    text: "OpenRouter".into(),
+                },
+                VocabularyPhrase {
+                    text: "Hyprland".into(),
+                },
+                VocabularyPhrase {
+                    text: "VoxLine".into(),
+                },
+            ],
+            replacements: vec![
+                VocabularyReplacement {
+                    from: "hyper land".into(),
+                    to: "Hyprland".into(),
+                    case_sensitive: false,
+                },
+                VocabularyReplacement {
+                    from: "open router".into(),
+                    to: "OpenRouter".into(),
+                    case_sensitive: false,
+                },
+            ],
+        }
+    }
+}
+impl Default for HallucinationFilterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            phrases: vec![
+                "thank you.".into(),
+                "thanks for watching.".into(),
+                "subtitles by".into(),
+                "subtitle by".into(),
+                "captioned by".into(),
+            ],
         }
     }
 }
@@ -299,6 +360,24 @@ impl Config {
         Ok(path)
     }
 
+    pub fn save(&self) -> Result<PathBuf, ConfigError> {
+        let path = Self::path()?;
+        let parent = path
+            .parent()
+            .ok_or(ConfigError::ConfigDirectoryUnavailable)?;
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_path_buf(),
+            source,
+        })?;
+        let text = toml::to_string_pretty(self)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        fs::write(&path, text).map_err(|source| ConfigError::Write {
+            path: path.clone(),
+            source,
+        })?;
+        Ok(path)
+    }
+
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.daemon.protocol_version != 1 {
             return Err(ConfigError::Validation("protocol_version must be 1".into()));
@@ -316,6 +395,11 @@ impl Config {
         if self.cleanup.enabled && self.cleanup.provider == "none" {
             return Err(ConfigError::Validation(
                 "cleanup provider cannot be none when cleanup is enabled".into(),
+            ));
+        }
+        if !matches!(self.asr.lifecycle.mode.as_str(), "on_demand" | "keep_warm") {
+            return Err(ConfigError::Validation(
+                "asr lifecycle mode must be on_demand or keep_warm".into(),
             ));
         }
         Ok(())
