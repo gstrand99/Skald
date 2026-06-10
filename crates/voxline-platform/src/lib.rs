@@ -1,6 +1,68 @@
-use std::{env, process::Command};
+use std::{
+    env,
+    io::Write,
+    process::{Command, Stdio},
+};
 
 use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum PlatformError {
+    #[error("no supported clipboard tool is available (install wl-clipboard or xclip)")]
+    ClipboardUnavailable,
+    #[error("failed to start {tool}: {source}")]
+    Start {
+        tool: &'static str,
+        source: std::io::Error,
+    },
+    #[error("failed to write clipboard text to {tool}: {source}")]
+    Write {
+        tool: &'static str,
+        source: std::io::Error,
+    },
+    #[error("failed to open stdin for {tool}")]
+    StdinUnavailable { tool: &'static str },
+    #[error("{tool} exited unsuccessfully")]
+    Failed { tool: &'static str },
+}
+
+pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
+    let (tool, args): (&'static str, &[&str]) = if command_exists("wl-copy") {
+        ("wl-copy", &[])
+    } else if command_exists("xclip") {
+        ("xclip", &["-selection", "clipboard"])
+    } else {
+        return Err(PlatformError::ClipboardUnavailable);
+    };
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    child
+        .stdin
+        .take()
+        .ok_or(PlatformError::StdinUnavailable { tool })?
+        .write_all(text.as_bytes())
+        .map_err(|source| PlatformError::Write { tool, source })?;
+    let status = child
+        .wait()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(PlatformError::Failed { tool })
+    }
+}
+
+pub fn notify(summary: &str, body: &str) {
+    if command_exists("notify-send")
+        && let Err(error) = Command::new("notify-send").args([summary, body]).spawn()
+    {
+        tracing::warn!(%error, "failed to start notify-send");
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
