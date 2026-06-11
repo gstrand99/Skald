@@ -85,6 +85,10 @@ apps-detect: build
 snippets-list: build
     target/debug/voxline snippets list
 
+# Preview template snippet rendering for sample dictated text.
+snippets-preview name text: build
+    target/debug/voxline snippets preview {{name}} "{{text}}"
+
 # Test voice command parsing for sample transcript text.
 commands-test text: build
     target/debug/voxline commands test "{{text}}"
