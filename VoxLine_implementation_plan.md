@@ -2523,6 +2523,31 @@ voxline doctor
 
 This is the v1 baseline.
 
+### M7.5: Config layout and documented shape
+
+Deliver:
+
+```text
+full config.toml scaffold matching section 24
+styles/, apps/, snippets/, and model directories on config init
+[injection.linux] config section
+paths.runtime_dir resolution (auto → XDG runtime)
+voxline config profile power-user-nvidia
+voxline config profile cpu-safe
+doctor check for routing directory scaffold
+```
+
+Acceptance:
+
+```bash
+voxline config init
+voxline config profile cpu-safe
+voxline config validate
+voxline doctor
+```
+
+Blocks M8a/M8b/M8c routing work.
+
 ### M7: OpenRouter cleanup
 
 Deliver:
