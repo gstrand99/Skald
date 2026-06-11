@@ -6,7 +6,7 @@
 
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -19,7 +19,7 @@ use cpal::{
 use thiserror::Error;
 use tokio::sync::oneshot;
 use voxline_core::{
-    config::{AudioConfig, PathsConfig},
+    config::{AudioConfig, AudioGatesConfig, PathsConfig},
     protocol::{AudioRecording, JobId},
     runtime::runtime_dir_for,
 };
@@ -385,6 +385,51 @@ fn samples_to_duration_ms(samples: usize, sample_rate: u32) -> u64 {
         .unwrap_or(u64::MAX)
         .saturating_mul(1_000)
         / u64::from(sample_rate)
+}
+
+pub fn recording_from_existing_wav(
+    path: &Path,
+    gates: &AudioGatesConfig,
+    target_sample_rate: u32,
+) -> Result<AudioRecording, AudioError> {
+    let mut reader =
+        hound::WavReader::open(path).map_err(|error| AudioError::Processing(error.to_string()))?;
+    let spec = reader.spec();
+    let channels = spec.channels;
+    let samples: Vec<f32> = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .samples::<f32>()
+            .map(|sample| sample.map_err(|error| AudioError::Processing(error.to_string())))
+            .collect::<Result<Vec<_>, _>>()?,
+        hound::SampleFormat::Int => {
+            let divisor = f32::from(1_u16 << spec.bits_per_sample.saturating_sub(1).min(15));
+            reader
+                .samples::<i32>()
+                .map(|sample| {
+                    sample
+                        .map(|value| value as f32 / divisor)
+                        .map_err(|error| AudioError::Processing(error.to_string()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+    let mono = mix_to_mono(&samples, channels);
+    let resampled = resample_linear(&mono, spec.sample_rate, target_sample_rate);
+    let (rms_energy, peak_energy) = energy(&resampled);
+    let duration_ms = samples_to_duration_ms(resampled.len(), target_sample_rate);
+    let speech_detected = duration_ms >= gates.min_record_ms
+        && rms_energy >= gates.min_rms_energy
+        && peak_energy >= gates.min_peak_energy;
+    Ok(AudioRecording {
+        job_id: JobId::new(),
+        wav_path: path.to_path_buf(),
+        duration_ms,
+        sample_rate: target_sample_rate,
+        channels: 1,
+        rms_energy,
+        peak_energy,
+        speech_detected,
+    })
 }
 
 fn write_wav(path: &PathBuf, samples: &[f32], sample_rate: u32) -> Result<(), AudioError> {
