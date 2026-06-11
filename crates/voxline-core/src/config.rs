@@ -303,6 +303,7 @@ pub struct PrivacyConfig {
     pub store_raw_transcript: bool,
     pub store_cleaned_transcript: bool,
     pub log_transcripts: bool,
+    pub emit_transcript_in_events: bool,
 }
 
 impl PrivacyConfig {
@@ -313,6 +314,7 @@ impl PrivacyConfig {
             || self.store_raw_transcript
             || self.store_cleaned_transcript
             || self.log_transcripts
+            || self.emit_transcript_in_events
     }
 }
 

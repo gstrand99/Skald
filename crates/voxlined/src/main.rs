@@ -33,7 +33,7 @@ use voxline_core::{
     protocol::{
         AsrBenchCandidate, AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult,
         Event, EventKind, JobId, JobState, ModelBenchResult, ModelState, PROTOCOL_VERSION,
-        ProtocolError, Request, Response, SessionEnvironment, Transcript,
+        ProtocolError, PublicDictationResult, Request, Response, SessionEnvironment, Transcript,
     },
     runtime::{ensure_runtime_dir_for, secure_socket_permissions, socket_path_for},
 };
@@ -1039,7 +1039,10 @@ async fn finish_dictation(
     let _ = state.events.send(Event::Result {
         protocol_version: PROTOCOL_VERSION,
         timestamp_ms: now_ms(),
-        result: result.clone(),
+        result: PublicDictationResult::from_result(
+            &result,
+            state.privacy.emit_transcript_in_events,
+        ),
     });
     if state.notifications.enabled {
         voxline_platform::notify(
@@ -1379,7 +1382,10 @@ async fn deliver_template_from_job(
     let _ = state.events.send(Event::Result {
         protocol_version: PROTOCOL_VERSION,
         timestamp_ms: now_ms(),
-        result,
+        result: PublicDictationResult::from_result(
+            &result,
+            state.privacy.emit_transcript_in_events,
+        ),
     });
     if state.notifications.enabled {
         voxline_platform::notify(
@@ -1538,7 +1544,10 @@ async fn deliver_snippet_from_job(
     let _ = state.events.send(Event::Result {
         protocol_version: PROTOCOL_VERSION,
         timestamp_ms: now_ms(),
-        result,
+        result: PublicDictationResult::from_result(
+            &result,
+            state.privacy.emit_transcript_in_events,
+        ),
     });
     if state.notifications.enabled {
         voxline_platform::notify(
@@ -1630,7 +1639,10 @@ async fn insert_snippet(request_id: String, state: &AppState, name: String) -> R
     let _ = state.events.send(Event::Result {
         protocol_version: PROTOCOL_VERSION,
         timestamp_ms: now_ms(),
-        result,
+        result: PublicDictationResult::from_result(
+            &result,
+            state.privacy.emit_transcript_in_events,
+        ),
     });
     if state.notifications.enabled {
         voxline_platform::notify(
