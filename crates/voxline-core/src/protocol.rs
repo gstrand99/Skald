@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
+use crate::cleanup::CleanupOverride;
+
 pub const PROTOCOL_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -26,19 +28,30 @@ impl Default for JobId {
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
     Status,
-    Toggle,
+    Toggle {
+        #[serde(default)]
+        cleanup: Option<CleanupOverride>,
+    },
     Start,
     Stop,
     Cancel,
-    Transcribe { audio_path: PathBuf },
+    Transcribe {
+        audio_path: PathBuf,
+    },
     AsrStatus,
     AsrLoad,
     AsrUnload,
     AsrRestart,
     TestClipboard,
     TestPaste,
+    TestOpenrouter,
+    CleanupPreview {
+        text: String,
+    },
     DaemonEnvironment,
-    Subscribe { events: Vec<EventKind> },
+    Subscribe {
+        events: Vec<EventKind>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,6 +98,10 @@ pub struct Response {
     pub error: Option<ProtocolError>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_environment: Option<SessionEnvironment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleaned_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,6 +156,8 @@ pub struct DictationResult {
     pub paste_attempted: bool,
     pub paste_succeeded: bool,
     pub clipboard_restored: bool,
+    pub cleanup_used: bool,
+    pub cleanup_failed: bool,
     pub insertion_reason: String,
 }
 

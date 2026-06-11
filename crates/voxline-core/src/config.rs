@@ -3,6 +3,8 @@ use std::{fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+pub use crate::secrets::SecretsConfig;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("could not determine the user configuration directory")]
@@ -37,6 +39,7 @@ pub struct Config {
     pub asr: AsrConfig,
     pub vocabulary: VocabularyConfig,
     pub cleanup: CleanupConfig,
+    pub secrets: SecretsConfig,
     pub injection: InjectionConfig,
     pub notifications: NotificationsConfig,
     pub privacy: PrivacyConfig,
@@ -395,6 +398,14 @@ impl Config {
         if self.cleanup.enabled && self.cleanup.provider == "none" {
             return Err(ConfigError::Validation(
                 "cleanup provider cannot be none when cleanup is enabled".into(),
+            ));
+        }
+        if self.cleanup.enabled
+            && self.cleanup.provider == "openrouter"
+            && self.cleanup.model.trim().is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "cleanup model is required when openrouter cleanup is enabled".into(),
             ));
         }
         if !matches!(self.asr.lifecycle.mode.as_str(), "on_demand" | "keep_warm") {

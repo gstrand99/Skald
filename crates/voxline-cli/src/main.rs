@@ -1,3 +1,5 @@
+mod cleanup_cmd;
+mod secrets_cmd;
 mod service;
 
 use std::time::Duration;
@@ -10,9 +12,11 @@ use tokio::{
     net::UnixStream,
 };
 use voxline_core::{
+    cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
     config::Config,
     protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
     runtime::{runtime_dir, socket_path, verify_mode},
+    secrets,
 };
 use voxline_platform::{
     SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance,
@@ -32,7 +36,12 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Commands {
     Status,
-    Toggle,
+    Toggle {
+        #[arg(long)]
+        cleanup: bool,
+        #[arg(long)]
+        no_cleanup: bool,
+    },
     Start,
     #[command(name = "ptt-start")]
     PttStart,
@@ -80,6 +89,21 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+    Secrets {
+        #[command(subcommand)]
+        command: secrets_cmd::SecretsCommands,
+    },
+    Cleanup {
+        #[command(subcommand)]
+        command: CleanupCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CleanupCommands {
+    Enable { provider: String },
+    Disable,
+    Preview { text: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -109,6 +133,7 @@ enum TestCommands {
     },
     Clipboard,
     Paste,
+    Openrouter,
 }
 
 #[derive(Debug, Subcommand)]
@@ -161,6 +186,9 @@ struct DoctorReport {
     privacy: PrivacyReport,
     asr: AsrReport,
     paste: voxline_platform::PasteReport,
+    secrets: secrets::SecretStatus,
+    cleanup_provider: String,
+    cleanup_warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -187,7 +215,15 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Status => print_response(&send(Command::Status).await?),
-        Commands::Toggle => print_response(&send(Command::Toggle).await?),
+        Commands::Toggle {
+            cleanup,
+            no_cleanup,
+        } => print_response(
+            &send(Command::Toggle {
+                cleanup: cleanup_override(cleanup, no_cleanup)?,
+            })
+            .await?,
+        ),
         Commands::Start | Commands::PttStart => print_response(&send(Command::Start).await?),
         Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?),
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
@@ -225,16 +261,27 @@ async fn main() -> Result<()> {
         Commands::Vocab { command } => vocab(command)?,
         Commands::Record {
             seconds,
-            no_cleanup: _,
-        } => record(seconds).await?,
+            no_cleanup,
+        } => record(seconds, cleanup_override(false, no_cleanup)?).await?,
         Commands::Test { command } => match command {
-            TestCommands::Mic { seconds } => record(seconds).await?,
+            TestCommands::Mic { seconds } => record(seconds, None).await?,
             TestCommands::Clipboard => print_response(&send(Command::TestClipboard).await?),
             TestCommands::Paste => print_response(&send(Command::TestPaste).await?),
+            TestCommands::Openrouter => {
+                print_cleanup_response(&send(Command::TestOpenrouter).await?);
+            }
         },
         Commands::Doctor { json } => doctor(json).await?,
         Commands::Config { command } => config(&command)?,
         Commands::Service { command } => service_command(&command)?,
+        Commands::Secrets { command } => secrets_cmd::run(command)?,
+        Commands::Cleanup { command } => match command {
+            CleanupCommands::Enable { provider } => cleanup_cmd::enable(&provider)?,
+            CleanupCommands::Disable => cleanup_cmd::disable()?,
+            CleanupCommands::Preview { text } => {
+                print_cleanup_response(&send(Command::CleanupPreview { text }).await?);
+            }
+        },
     }
     Ok(())
 }
@@ -281,15 +328,28 @@ fn vocab(command: VocabCommands) -> Result<()> {
     Ok(())
 }
 
-async fn record(seconds: u64) -> Result<()> {
-    let started = send(Command::Start).await?;
+fn cleanup_override(cleanup: bool, no_cleanup: bool) -> Result<Option<CleanupOverride>> {
+    if cleanup && no_cleanup {
+        bail!("--cleanup and --no-cleanup cannot be used together");
+    }
+    if cleanup {
+        Ok(Some(CleanupOverride::Force))
+    } else if no_cleanup {
+        Ok(Some(CleanupOverride::Disable))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
+    let started = send(Command::Toggle { cleanup }).await?;
     if !started.ok {
         print_response(&started);
         bail!("recording did not start");
     }
     println!("Recording for {seconds} seconds...");
     tokio::time::sleep(Duration::from_secs(seconds)).await;
-    let stopped = send(Command::Stop).await?;
+    let stopped = send(Command::Toggle { cleanup: None }).await?;
     print_response(&stopped);
     if !stopped.ok {
         bail!("recording did not stop cleanly");
@@ -387,6 +447,17 @@ fn print_response(response: &Response) {
     );
 }
 
+fn print_cleanup_response(response: &Response) {
+    if let Some(text) = &response.cleaned_text {
+        println!("{text}");
+        if let Some(cleanup_ms) = response.cleanup_ms {
+            println!("cleanup_ms: {cleanup_ms}");
+        }
+        return;
+    }
+    print_response(response);
+}
+
 async fn doctor(json: bool) -> Result<()> {
     let config = Config::load_or_default()?;
     let config_valid = config.validate().is_ok();
@@ -413,6 +484,12 @@ async fn doctor(json: bool) -> Result<()> {
     let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
     let trigger = trigger_guidance(session, desktop);
     let model_path = expand_home(&config.asr.model_path);
+    let secret_status = secrets::secret_status(&config.secrets);
+    let cleanup_warning = if config.cleanup.enabled {
+        Some("Warning: transcript text is sent to the configured cleanup provider.".into())
+    } else {
+        None
+    };
     let report = DoctorReport {
         environment: cli_environment,
         config_path: Config::path()?.display().to_string(),
@@ -442,6 +519,9 @@ async fn doctor(json: bool) -> Result<()> {
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
         },
         paste: voxline_platform::paste_report(),
+        secrets: secret_status,
+        cleanup_provider: config.cleanup.provider.clone(),
+        cleanup_warning,
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -454,6 +534,7 @@ async fn doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn print_doctor(report: &DoctorReport) {
     println!("VoxLine doctor");
     println!(
@@ -507,6 +588,25 @@ fn print_doctor(report: &DoctorReport) {
     println!("Tools:");
     for tool in &report.environment.tools {
         println!("  {:<12} {}", tool.name, yes_no(tool.available));
+    }
+    println!("Secrets:");
+    println!(
+        "  Keyring available: {}",
+        yes_no(report.secrets.keyring_available)
+    );
+    println!(
+        "  OpenRouter configured: {}",
+        yes_no(report.secrets.openrouter_configured)
+    );
+    println!("  Env fallback: {}", yes_no(report.secrets.env_configured));
+    println!("Cleanup:");
+    println!("  Provider: {}", report.cleanup_provider);
+    println!("  Enabled: {}", yes_no(report.privacy.cleanup_enabled));
+    if let Some(message) = &report.cleanup_warning {
+        println!("  {message}");
+    }
+    if report.privacy.cleanup_enabled {
+        println!("  Note: {CLEANUP_COST_WARNING}");
     }
     println!("Privacy:");
     println!(
