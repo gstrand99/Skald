@@ -36,6 +36,39 @@ that would need such validation are marked accordingly.
   - Medium: 27
   - Low: 14
 
+## Remediation status (2026-06-11)
+
+All 47 findings were addressed on the `code-review` branch (tracked in issue #35),
+committed in 13 fix commits after the findings document:
+
+- `0019d34` — findings 4 (docs part), 22 (docs), 30, 31, and docs drift (47 subset)
+- `59ef1ad` — findings 1, 6, 24
+- `5a2d4cf` — findings 7, 10, 20, 21, 40, 41
+- `f289f6e` — findings 2, 3, 5, 14, 34, 43
+- `01a213c` — findings 11, 12, 28, 44
+- `e7b4872` — findings 13, 42
+- `28c9782` — findings 8, 23, 28 (doctor), 29, 33, 36
+- `a0f7096` — findings 4, 16, 25, 26, 35, 37
+- `40f1d9f` — findings 9, 18, 19, 39
+- `6aa914e` — findings 32, 38, 45, 46
+- `9326870` — findings 15, 17, 27, 47 (voxlined nits)
+- `9276d73` — findings 22, 47 (CLI nits), follow-ups to 18, 39
+
+Implemented but needing hardware or desktop-session validation:
+
+- Finding 12: X11 window-class capture (`xdotool getwindowclassname`) — needs an X11
+  session with varied applications.
+- Finding 14: rubato FFT resampling — code-verified; ASR accuracy impact needs
+  microphone testing.
+- Finding 27: preview model unload at stop — reload latency needs GPU testing.
+- Finding 44: Hyprland Shift+Insert plus PRIMARY-selection sync — needs Hyprland
+  session testing across native Wayland, XWayland, and terminal targets.
+- Finding 46: X11 multi-monitor overlay placement via xrandr — needs a multi-monitor
+  X11 session.
+
+Deferred (documented, not implemented): vocabulary hot reload (finding 45) and config
+schema migration machinery beyond the `config_version` gate (finding 18).
+
 ## Critical and high findings
 
 No critical findings. Nothing reviewed is remotely exploitable or destroys user data; the
