@@ -24,16 +24,22 @@ impl PreviewAgreement {
             };
         }
 
-        let mut prefix = 0;
-        for (previous, current) in self.previous_words.iter().zip(current_words.iter()) {
-            if words_match(previous, current) {
-                prefix += 1;
-            } else {
-                break;
+        let prefix = consecutive_prefix_len(&self.previous_words, &current_words);
+        if prefix == 0 {
+            let slide = suffix_prefix_overlap(&self.previous_words, &current_words);
+            if slide > 0 {
+                self.stable_words.clone_from(&self.previous_words);
+                self.previous_words.clone_from(&current_words);
+                return PreviewText {
+                    stable: self.stable_words.join(" "),
+                    provisional: current_words[slide..].join(" "),
+                };
             }
         }
 
-        if prefix > self.stable_words.len() {
+        if prefix < self.stable_words.len() {
+            self.stable_words.truncate(prefix);
+        } else if prefix > self.stable_words.len() {
             self.stable_words = current_words[..prefix].to_vec();
         }
 
@@ -118,8 +124,48 @@ pub fn trim_to_ring_buffer(samples: Vec<f32>, max_samples: usize) -> Vec<f32> {
     samples[samples.len() - max_samples..].to_vec()
 }
 
+/// Trim overlap between stable tail and provisional head for display.
+#[must_use]
+pub fn dedupe_preview_parts(stable: &str, provisional: &str) -> PreviewText {
+    if provisional.is_empty() {
+        return PreviewText {
+            stable: stable.to_owned(),
+            provisional: String::new(),
+        };
+    }
+    if stable.is_empty() {
+        return PreviewText {
+            stable: String::new(),
+            provisional: provisional.to_owned(),
+        };
+    }
+    let stable_words = split_words(stable);
+    let provisional_words = split_words(provisional);
+    let overlap = suffix_prefix_overlap(&stable_words, &provisional_words);
+    PreviewText {
+        stable: stable.to_owned(),
+        provisional: provisional_words[overlap..].join(" "),
+    }
+}
+
 fn split_words(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_string).collect()
+}
+
+fn consecutive_prefix_len(previous: &[String], current: &[String]) -> usize {
+    previous
+        .iter()
+        .zip(current.iter())
+        .take_while(|(left, right)| words_match(left, right))
+        .count()
+}
+
+fn suffix_prefix_overlap(left: &[String], right: &[String]) -> usize {
+    let max = left.len().min(right.len());
+    (1..=max)
+        .rev()
+        .find(|overlap| left[left.len() - overlap..] == right[..*overlap])
+        .unwrap_or(0)
 }
 
 fn words_match(left: &str, right: &str) -> bool {
@@ -163,6 +209,32 @@ mod tests {
         let corrected = agreement.update("hello there");
         assert_eq!(corrected.stable, "hello");
         assert_eq!(corrected.provisional, "there");
+    }
+
+    #[test]
+    fn agreement_shrinks_stable_after_growth_on_correction() {
+        let mut agreement = PreviewAgreement::default();
+        let _ = agreement.update("hello world");
+        let _ = agreement.update("hello world today");
+        let corrected = agreement.update("hello there");
+        assert_eq!(corrected.stable, "hello");
+        assert_eq!(corrected.provisional, "there");
+    }
+
+    #[test]
+    fn agreement_handles_sliding_window_overlap() {
+        let mut agreement = PreviewAgreement::default();
+        let _ = agreement.update("quick brown fox");
+        let slid = agreement.update("brown fox jumps");
+        assert_eq!(slid.stable, "quick brown fox");
+        assert_eq!(slid.provisional, "jumps");
+    }
+
+    #[test]
+    fn dedupe_preview_parts_trims_repeated_tail_words() {
+        let deduped = dedupe_preview_parts("hello world", "world today");
+        assert_eq!(deduped.stable, "hello world");
+        assert_eq!(deduped.provisional, "today");
     }
 
     #[test]
