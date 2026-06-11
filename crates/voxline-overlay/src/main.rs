@@ -5,7 +5,18 @@
     clippy::needless_pass_by_value
 )]
 
-use std::{cell::RefCell, path::PathBuf, rc::Rc, sync::mpsc, time::Duration};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
+};
 
 use anyhow::Result;
 use clap::Parser;
@@ -201,10 +212,31 @@ fn build_ui(
     };
     apply_state(&window, &status, &preview, &mut state);
 
+    let placement_polling = Arc::new(AtomicBool::new(false));
+    let (placement_tx, placement_rx) = mpsc::channel::<OverlayPlacementHint>();
+    let placement_polling_for_worker = Arc::clone(&placement_polling);
+    thread::spawn(move || {
+        loop {
+            if placement_polling_for_worker.load(Ordering::Relaxed) {
+                if let Some(hint) = capture_overlay_placement_hint()
+                    && placement_tx.send(hint).is_err()
+                {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(250));
+            } else {
+                thread::sleep(Duration::from_millis(50));
+            }
+        }
+    });
+
     let window_for_tick = window.clone();
     let status_for_tick = status.clone();
     let preview_for_tick = preview.clone();
     let overlay_config_for_tick = overlay_config.clone();
+    let placement_polling_for_tick = Arc::clone(&placement_polling);
+    let mut latest_placement: Option<OverlayPlacementHint> = None;
+    let mut last_applied_placement: Option<OverlayPlacementHint> = None;
     glib::timeout_add_local(Duration::from_millis(50), move || {
         while let Ok(message) = ui_rx.try_recv() {
             match message {
@@ -222,12 +254,22 @@ fn build_ui(
                 UiMessage::Event(event) => apply_event(&mut state, *event, hide_when_idle),
             }
         }
-        if layer_shell && use_cursor_placement && state.recording && state.visible {
-            apply_cursor_layer_placement(
-                &window_for_tick,
-                &overlay_config_for_tick,
-                capture_overlay_placement_hint(),
-            );
+        placement_polling_for_tick.store(
+            layer_shell && use_cursor_placement && state.recording && state.visible,
+            Ordering::Relaxed,
+        );
+        while let Ok(hint) = placement_rx.try_recv() {
+            latest_placement = Some(hint);
+        }
+        if layer_shell
+            && use_cursor_placement
+            && state.recording
+            && state.visible
+            && let Some(hint) = latest_placement
+            && last_applied_placement != Some(hint)
+        {
+            apply_cursor_layer_placement(&window_for_tick, &overlay_config_for_tick, Some(hint));
+            last_applied_placement = Some(hint);
         }
         apply_state(
             &window_for_tick,
@@ -313,11 +355,16 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
         }
         Event::Result { .. } => {
             state.status = "Done".into();
+            state.stable.clear();
             state.provisional.clear();
+            state.last_markup.clear();
             state.visible = true;
         }
         Event::Error { error, .. } => {
             state.status = format!("Error: {}", error.message);
+            state.stable.clear();
+            state.provisional.clear();
+            state.last_markup.clear();
             state.visible = true;
         }
     }

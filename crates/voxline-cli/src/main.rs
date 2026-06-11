@@ -437,10 +437,8 @@ fn vocab(command: VocabCommands) -> Result<()> {
             }
         }
         VocabCommands::Test { text } => {
-            let mut output = text;
-            for replacement in config.vocabulary.replacements {
-                output = output.replace(&replacement.from, &replacement.to);
-            }
+            let output =
+                voxline_core::text::apply_vocabulary_replacements(&text, &config.vocabulary);
             println!("{output}");
         }
         VocabCommands::Add { command } => {
@@ -461,6 +459,7 @@ fn vocab(command: VocabCommands) -> Result<()> {
                     );
                 }
             }
+            config.validate()?;
             println!("{}", config.save()?.display());
         }
     }

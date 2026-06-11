@@ -17,3 +17,4 @@ pub mod snippet_templates;
 pub mod snippets;
 pub mod styles;
 pub mod system_probe;
+pub mod text;

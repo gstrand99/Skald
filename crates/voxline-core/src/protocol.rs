@@ -7,6 +7,45 @@ use crate::cleanup::CleanupOverride;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Stable error codes emitted by `voxlined` and consumed by CLI clients.
+///
+/// The daemon still uses string literals today; follow-up work can switch call sites to
+/// these constants.
+pub mod error_codes {
+    pub const INVALID_REQUEST: &str = "invalid_request";
+    pub const PROTOCOL_MISMATCH: &str = "protocol_mismatch";
+    pub const BUSY: &str = "busy";
+    pub const CANNOT_CANCEL: &str = "cannot_cancel";
+    pub const NO_ACTIVE_RECORDING: &str = "no_active_recording";
+    pub const AUDIO_ERROR: &str = "audio_error";
+    pub const ASR_ERROR: &str = "asr_error";
+    pub const NO_SPEECH: &str = "no_speech";
+    pub const EMPTY_TRANSCRIPT: &str = "empty_transcript";
+    pub const CLEANUP_ERROR: &str = "cleanup_error";
+    pub const CLEANUP_DISABLED: &str = "cleanup_disabled";
+    pub const CLEANUP_PREVIEW_FAILED: &str = "cleanup_preview_failed";
+    pub const CLIPBOARD_ERROR: &str = "clipboard_error";
+    pub const CLIPBOARD_TEST_FAILED: &str = "clipboard_test_failed";
+    pub const BENCH_AUDIO_INVALID: &str = "bench_audio_invalid";
+    pub const BENCH_NO_CANDIDATES: &str = "bench_no_candidates";
+    pub const SETUP_RECORD_FAILED: &str = "setup_record_failed";
+    pub const TEMPLATE_ERROR: &str = "template_error";
+    pub const TEMPLATE_PREVIEW_UNAVAILABLE: &str = "template_preview_unavailable";
+    pub const TEMPLATE_PREVIEW_FAILED: &str = "template_preview_failed";
+    pub const SNIPPET_ERROR: &str = "snippet_error";
+    pub const OPENROUTER_TEST_UNAVAILABLE: &str = "openrouter_test_unavailable";
+    pub const OPENROUTER_TEST_FAILED: &str = "openrouter_test_failed";
+    pub const PASTE_TEST_UNAVAILABLE: &str = "paste_test_unavailable";
+    pub const PASTE_TEST_FAILED: &str = "paste_test_failed";
+    pub const PASTE_UNSUPPORTED_SESSION: &str = "paste_unsupported_session";
+    pub const PASTE_TERMINAL_UNSAFE: &str = "paste_terminal_unsafe";
+    pub const PASTE_UNSAFE_STALE: &str = "paste_unsafe_stale";
+    pub const PASTE_UNSAFE_TARGET_CHANGED: &str = "paste_unsafe_target_changed";
+    pub const PASTE_PROFILE_CLIPBOARD_ONLY: &str = "paste_profile_clipboard_only";
+    pub const PASTE_FAILED: &str = "paste_failed";
+    pub const PREVIEW_ASR_ERROR: &str = "preview_asr_error";
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(pub Ulid);

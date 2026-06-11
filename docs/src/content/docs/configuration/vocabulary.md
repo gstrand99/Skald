@@ -60,5 +60,5 @@ worker captures vocabulary when it spawns at daemon start.
 
 - Initial prompt biasing works best for short proper nouns and technical terms.
 - Replacements fix consistent ASR mistakes without retraining the model.
-- `voxline vocab test` uses plain substring replacement and can differ from the
-  daemon's whole-word boundary matching.
+- `voxline vocab test` applies the same whole-word replacement rules used during
+  transcription.
