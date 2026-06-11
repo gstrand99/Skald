@@ -5,6 +5,7 @@ use thiserror::Error;
 
 pub use crate::secrets::SecretsConfig;
 use crate::{
+    apps,
     paths::{self, scaffold_config_layout},
     styles,
 };
@@ -383,6 +384,8 @@ impl Config {
         })?;
         styles::ensure_default_style_files(&config.paths)
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        apps::ensure_default_app_profiles(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
         let text = toml::to_string_pretty(&config)
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
         fs::write(&path, text).map_err(|source| ConfigError::Write {
@@ -524,6 +527,15 @@ impl Config {
                     issue.style, issue.message
                 )));
             }
+        }
+        if let Some(issue) = apps::validate_installed_app_profiles(&self.paths)
+            .into_iter()
+            .next()
+        {
+            return Err(ConfigError::Validation(format!(
+                "app {}: {}",
+                issue.app, issue.message
+            )));
         }
         Ok(())
     }

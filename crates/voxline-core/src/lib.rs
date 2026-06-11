@@ -1,7 +1,9 @@
+pub mod apps;
 pub mod cleanup;
 pub mod config;
 pub mod paths;
 pub mod protocol;
+pub mod routing;
 pub mod runtime;
 pub mod secrets;
 pub mod service;

@@ -77,6 +77,10 @@ cleanup-preview text style="": build
 styles-list: build
     target/debug/voxline styles list
 
+# Show active target and matched application profile.
+apps-detect: build
+    target/debug/voxline apps detect
+
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
     target/debug/voxline test openrouter
