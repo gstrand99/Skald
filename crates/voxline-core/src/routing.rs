@@ -11,12 +11,13 @@ pub struct CleanupRouting {
 #[must_use]
 pub fn resolve_cleanup_routing(
     cli_style: Option<&str>,
+    voice_style: Option<&str>,
     cli_cleanup: Option<CleanupOverride>,
     global_cleanup_enabled: bool,
     global_default_style: &str,
     app_profile: Option<&AppProfile>,
 ) -> CleanupRouting {
-    let style_name = resolve_style_name(cli_style, app_profile, global_default_style);
+    let style_name = resolve_style_name(cli_style, voice_style, app_profile, global_default_style);
     let cleanup_enabled = resolve_cleanup_enabled(cli_cleanup, global_cleanup_enabled, app_profile);
     let app_prompt = app_profile
         .and_then(|profile| profile.prompt.as_ref())
@@ -37,10 +38,14 @@ pub fn resolve_cleanup_routing(
 #[must_use]
 pub fn resolve_style_name(
     cli_style: Option<&str>,
+    voice_style: Option<&str>,
     app_profile: Option<&AppProfile>,
     global_default_style: &str,
 ) -> String {
     if let Some(style) = cli_style.map(str::trim).filter(|name| !name.is_empty()) {
+        return style.to_owned();
+    }
+    if let Some(style) = voice_style.map(str::trim).filter(|name| !name.is_empty()) {
         return style.to_owned();
     }
     if let Some(style) = app_profile
@@ -92,6 +97,20 @@ mod tests {
         let routing = resolve_cleanup_routing(
             Some("professional"),
             None,
+            None,
+            true,
+            "default",
+            Some(&slack_profile()),
+        );
+        assert_eq!(routing.style_name, "professional");
+    }
+
+    #[test]
+    fn voice_style_used_without_cli_override() {
+        let routing = resolve_cleanup_routing(
+            None,
+            Some("professional"),
+            None,
             true,
             "default",
             Some(&slack_profile()),
@@ -101,7 +120,8 @@ mod tests {
 
     #[test]
     fn app_style_used_without_cli_override() {
-        let routing = resolve_cleanup_routing(None, None, true, "default", Some(&slack_profile()));
+        let routing =
+            resolve_cleanup_routing(None, None, None, true, "default", Some(&slack_profile()));
         assert_eq!(routing.style_name, "casual");
     }
 
@@ -109,7 +129,7 @@ mod tests {
     fn app_cleanup_disable_overrides_global_enable() {
         let mut profile = slack_profile();
         profile.cleanup.enabled = Some(false);
-        let routing = resolve_cleanup_routing(None, None, true, "default", Some(&profile));
+        let routing = resolve_cleanup_routing(None, None, None, true, "default", Some(&profile));
         assert!(!routing.cleanup_enabled);
     }
 }

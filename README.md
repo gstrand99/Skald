@@ -107,6 +107,17 @@ voxline snippets insert signature
 voxline toggle --snippet signature
 ```
 
+Experimental voice commands (opt-in, disabled by default) parse a required
+prefix at the **start** of the transcript after ASR. The default prefix
+`voxline` also matches when ASR splits it into two words (`Vox Line`). They can
+select a cleanup style or insert a snippet when the remainder is empty:
+
+```bash
+# enable [voice_commands] in config.toml first
+voxline commands test "voxline professional hey john thanks"
+voxline commands conflicts
+```
+
 **`[secrets]`** — Where to look for API keys. Keys are never stored in
 `config.toml`. Use `voxline secrets set openrouter` (keyring), or set
 `OPENROUTER_API_KEY`, or opt into the insecure file fallback explicitly.

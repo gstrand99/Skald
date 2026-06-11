@@ -85,6 +85,10 @@ apps-detect: build
 snippets-list: build
     target/debug/voxline snippets list
 
+# Test voice command parsing for sample transcript text.
+commands-test text: build
+    target/debug/voxline commands test "{{text}}"
+
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
     target/debug/voxline test openrouter
