@@ -49,6 +49,7 @@ pub struct Config {
     pub notifications: NotificationsConfig,
     pub privacy: PrivacyConfig,
     pub voice_commands: VoiceCommandsConfig,
+    pub preview: PreviewConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -63,6 +64,70 @@ impl Default for VoiceCommandsConfig {
         Self {
             enabled: false,
             prefix: "voxline".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PreviewConfig {
+    pub enabled: bool,
+    pub chunk_ms: u64,
+    pub step_ms: u64,
+    pub overlap_ms: u64,
+    pub min_rms_energy: f32,
+    pub ring_buffer_seconds: u64,
+    pub gpu: bool,
+    /// Defaults to `ggml-small.en.bin` under `paths.model_dir` when empty.
+    pub model_path: String,
+    /// Zero uses `asr.threads`.
+    pub threads: u16,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            chunk_ms: 2_000,
+            step_ms: 1_000,
+            overlap_ms: 500,
+            min_rms_energy: 0.003,
+            ring_buffer_seconds: 30,
+            gpu: false,
+            model_path: "~/.local/share/voxline/models/ggml-small.en.bin".into(),
+            threads: 0,
+        }
+    }
+}
+
+impl PreviewConfig {
+    #[must_use]
+    pub fn effective_model_path(&self) -> String {
+        let trimmed = self.model_path.trim();
+        if trimmed.is_empty() {
+            "~/.local/share/voxline/models/ggml-small.en.bin".into()
+        } else {
+            trimmed.to_owned()
+        }
+    }
+
+    #[must_use]
+    pub fn effective_threads(&self) -> u16 {
+        if self.threads == 0 { 4 } else { self.threads }
+    }
+
+    #[must_use]
+    pub fn to_asr_config(&self, asr: &AsrConfig) -> AsrConfig {
+        AsrConfig {
+            model_path: self.effective_model_path(),
+            threads: self.effective_threads(),
+            gpu: self.gpu,
+            lifecycle: AsrLifecycleConfig {
+                mode: "keep_warm".into(),
+                warm_on_daemon_start: true,
+                idle_unload_seconds: 900,
+            },
+            ..asr.clone()
         }
     }
 }
@@ -532,6 +597,30 @@ impl Config {
         }
         commands::validate_voice_commands(&self.voice_commands, &self.paths)
             .map_err(|error| ConfigError::Validation(format!("voice_commands: {error}")))?;
+        if self.preview.enabled {
+            if self.preview.chunk_ms == 0 || self.preview.step_ms == 0 {
+                return Err(ConfigError::Validation(
+                    "preview chunk_ms and step_ms must be greater than zero".into(),
+                ));
+            }
+            if self.preview.overlap_ms >= self.preview.chunk_ms {
+                return Err(ConfigError::Validation(
+                    "preview overlap_ms must be less than chunk_ms".into(),
+                ));
+            }
+            if self.preview.ring_buffer_seconds == 0 {
+                return Err(ConfigError::Validation(
+                    "preview ring_buffer_seconds must be greater than zero".into(),
+                ));
+            }
+            let preview_model = paths::expand_home(&self.preview.effective_model_path());
+            if !preview_model.is_file() {
+                return Err(ConfigError::Validation(format!(
+                    "preview model not found at {}",
+                    preview_model.display()
+                )));
+            }
+        }
         validate_layout_files(self)
     }
 }
@@ -620,5 +709,19 @@ mod tests {
         let text = include_str!("../../../config-example/linux/config.toml");
         let config: Config = toml::from_str(text).expect("example config should parse");
         config.validate().expect("example config should validate");
+    }
+
+    #[test]
+    fn preview_asr_config_uses_small_model_and_cpu_defaults() {
+        let mut config = Config::default();
+        config.preview.enabled = true;
+        config.preview.model_path.clear();
+        let preview_asr = config.preview.to_asr_config(&config.asr);
+        assert_eq!(
+            preview_asr.model_path,
+            "~/.local/share/voxline/models/ggml-small.en.bin"
+        );
+        assert!(!preview_asr.gpu);
+        assert_eq!(preview_asr.lifecycle.mode, "keep_warm");
     }
 }

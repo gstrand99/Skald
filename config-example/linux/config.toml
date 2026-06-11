@@ -140,3 +140,17 @@ log_transcripts = false
 [voice_commands]
 enabled = false
 prefix = "voxline"
+
+# Realtime transcription preview while recording (never pasted).
+# Uses a separate small model on CPU by default while final transcription keeps [asr].
+# Enable with preview.enabled = true, then run: voxline watch
+[preview]
+enabled = false
+chunk_ms = 2000
+step_ms = 1000
+overlap_ms = 500
+min_rms_energy = 0.003
+ring_buffer_seconds = 30
+model_path = "~/.local/share/voxline/models/ggml-small.en.bin"
+gpu = false
+threads = 0

@@ -35,6 +35,10 @@ cancel: build
 status: build
     target/debug/voxline status
 
+# Stream daemon events with live preview text when preview is enabled.
+watch: build
+    target/debug/voxline watch
+
 # Verify clipboard write/read/restore through the daemon.
 test-clipboard: build
     target/debug/voxline test clipboard

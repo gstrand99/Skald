@@ -46,13 +46,42 @@ pub enum AudioError {
     Processing(String),
 }
 
+#[derive(Clone)]
+pub struct RecordingTap {
+    samples: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    sample_rate: u32,
+    channels: u16,
+    target_sample_rate: u32,
+    max_samples: usize,
+}
+
+impl RecordingTap {
+    #[must_use]
+    pub fn target_sample_rate(&self) -> u32 {
+        self.target_sample_rate
+    }
+
+    pub fn resampled_snapshot(&self) -> Vec<f32> {
+        let raw = self
+            .samples
+            .lock()
+            .map(|samples| samples.clone())
+            .unwrap_or_default();
+        let mono = mix_to_mono(&raw, self.channels);
+        let resampled = resample_linear(&mono, self.sample_rate, self.target_sample_rate);
+        voxline_core::preview::trim_to_ring_buffer(resampled, self.max_samples)
+    }
+}
+
 pub struct AudioRecorder {
     commands: mpsc::Sender<OwnerCommand>,
+    tap: std::sync::Arc<std::sync::Mutex<Option<RecordingTap>>>,
 }
 
 enum OwnerCommand {
     Start {
         job_id: JobId,
+        preview_ring_buffer_seconds: Option<u64>,
         reply: oneshot::Sender<Result<(), AudioError>>,
     },
     Stop {
@@ -77,17 +106,31 @@ struct ActiveRecording {
 impl AudioRecorder {
     pub fn spawn(config: AudioConfig, paths: PathsConfig) -> Self {
         let (commands, receiver) = mpsc::channel();
+        let tap = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tap_for_owner = tap.clone();
         thread::Builder::new()
             .name("voxline-audio-owner".into())
-            .spawn(move || owner_loop(config, paths, receiver))
+            .spawn(move || owner_loop(config, paths, receiver, tap_for_owner))
             .expect("audio owner thread should start");
-        Self { commands }
+        Self { commands, tap }
     }
 
-    pub async fn start(&self, job_id: JobId) -> Result<(), AudioError> {
+    pub fn current_tap(&self) -> Option<RecordingTap> {
+        self.tap.lock().ok()?.clone()
+    }
+
+    pub async fn start(
+        &self,
+        job_id: JobId,
+        preview_ring_buffer_seconds: Option<u64>,
+    ) -> Result<(), AudioError> {
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(OwnerCommand::Start { job_id, reply })
+            .send(OwnerCommand::Start {
+                job_id,
+                preview_ring_buffer_seconds,
+                reply,
+            })
             .map_err(|_| AudioError::OwnerStopped)?;
         response.await.map_err(|_| AudioError::OwnerStopped)?
     }
@@ -110,25 +153,58 @@ impl AudioRecorder {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn owner_loop(config: AudioConfig, paths: PathsConfig, receiver: mpsc::Receiver<OwnerCommand>) {
+fn owner_loop(
+    config: AudioConfig,
+    paths: PathsConfig,
+    receiver: mpsc::Receiver<OwnerCommand>,
+    tap_slot: std::sync::Arc<std::sync::Mutex<Option<RecordingTap>>>,
+) {
     let mut active: Option<ActiveRecording> = None;
     while let Ok(command) = receiver.recv() {
         match command {
-            OwnerCommand::Start { job_id, reply } => {
+            OwnerCommand::Start {
+                job_id,
+                preview_ring_buffer_seconds,
+                reply,
+            } => {
                 let result = if active.is_some() {
                     Err(AudioError::AlreadyRecording)
                 } else {
-                    start_recording(job_id, &config).map(|recording| active = Some(recording))
+                    start_recording(job_id, &config).map(|recording| {
+                        if let Some(seconds) = preview_ring_buffer_seconds
+                            && let Ok(mut slot) = tap_slot.lock()
+                        {
+                            let max_samples = usize::try_from(
+                                seconds.saturating_mul(u64::from(config.target_sample_rate)),
+                            )
+                            .unwrap_or(usize::MAX);
+                            *slot = Some(RecordingTap {
+                                samples: recording.samples.clone(),
+                                sample_rate: recording.sample_rate,
+                                channels: recording.channels,
+                                target_sample_rate: config.target_sample_rate,
+                                max_samples,
+                            });
+                        }
+                        active = Some(recording);
+                    })
                 };
                 let _ = reply.send(result);
             }
             OwnerCommand::Stop { job_id, reply } => {
-                let result = take_matching(&mut active, &job_id)
-                    .and_then(|recording| finish_recording(recording, &config, &paths));
+                let result = take_matching(&mut active, &job_id).and_then(|recording| {
+                    if let Ok(mut slot) = tap_slot.lock() {
+                        *slot = None;
+                    }
+                    finish_recording(recording, &config, &paths)
+                });
                 let _ = reply.send(result);
             }
             OwnerCommand::Cancel { job_id, reply } => {
                 let result = take_matching(&mut active, &job_id).map(drop);
+                if let Ok(mut slot) = tap_slot.lock() {
+                    *slot = None;
+                }
                 let _ = reply.send(result);
             }
         }
@@ -240,10 +316,10 @@ fn finish_recording(
     } = recording;
     drop(stream);
     thread::sleep(Duration::from_millis(20));
-    let samples = std::sync::Arc::try_unwrap(samples)
-        .map_err(|_| AudioError::Processing("audio callback still owns samples".into()))?
-        .into_inner()
-        .map_err(|_| AudioError::Processing("audio sample buffer was poisoned".into()))?;
+    let samples = samples
+        .lock()
+        .map_err(|_| AudioError::Processing("audio sample buffer was poisoned".into()))?
+        .clone();
     let mono = mix_to_mono(&samples, channels);
     let resampled = resample_linear(&mono, sample_rate, config.target_sample_rate);
     let (rms_energy, peak_energy) = energy(&resampled);

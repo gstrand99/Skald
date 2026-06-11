@@ -6,7 +6,7 @@ mod service;
 mod snippets_cmd;
 mod styles_cmd;
 
-use std::time::Duration;
+use std::{io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -21,7 +21,10 @@ use voxline_core::{
     commands,
     config::Config,
     paths,
-    protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
+    protocol::{
+        Command, Event, EventKind, JobState, PROTOCOL_VERSION, Request, Response,
+        SessionEnvironment,
+    },
     runtime::{runtime_dir_for, socket_path_for, verify_mode},
     secrets, snippets, styles,
 };
@@ -223,6 +226,7 @@ struct DoctorReport {
     environment_mismatch: Option<String>,
     privacy: PrivacyReport,
     asr: AsrReport,
+    preview: Option<PreviewReport>,
     paste: voxline_platform::PasteReport,
     secrets: secrets::SecretStatus,
     cleanup_provider: String,
@@ -242,6 +246,13 @@ struct AsrReport {
     model_exists: bool,
     gpu_requested: bool,
     lifecycle_mode: String,
+}
+
+#[derive(Debug, Serialize)]
+struct PreviewReport {
+    model_path: String,
+    model_exists: bool,
+    gpu_requested: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -496,15 +507,123 @@ async fn watch() -> Result<()> {
         protocol_version: PROTOCOL_VERSION,
         request_id: ulid::Ulid::new().to_string(),
         command: Command::Subscribe {
-            events: vec![EventKind::State, EventKind::Result, EventKind::Error],
+            events: vec![
+                EventKind::State,
+                EventKind::Result,
+                EventKind::Error,
+                EventKind::Preview,
+            ],
         },
     };
     write_request(&mut writer, &request).await?;
     let mut lines = BufReader::new(reader).lines();
+    let mut preview_display = PreviewDisplay::default();
+    let mut recording = false;
     while let Some(line) = lines.next_line().await? {
-        println!("{line}");
+        let event: Event = if let Ok(event) = serde_json::from_str(&line) {
+            event
+        } else {
+            println!("{line}");
+            continue;
+        };
+        match event {
+            Event::Preview {
+                stable,
+                provisional,
+                speech_active,
+                ..
+            } => {
+                preview_display.update(&stable, &provisional, speech_active);
+            }
+            Event::State { job_state, .. } => match job_state {
+                JobState::Recording => {
+                    recording = true;
+                    preview_display.begin();
+                }
+                JobState::Stopping => {
+                    recording = false;
+                    preview_display.finish();
+                    println!("transcribing…");
+                }
+                JobState::Transcribing | JobState::Cleaning => {
+                    recording = false;
+                }
+                JobState::Idle | JobState::Done | JobState::Cancelled | JobState::Failed { .. } => {
+                    recording = false;
+                    preview_display.finish();
+                }
+                _ if recording => {}
+                _ => println!("{line}"),
+            },
+            Event::Result { result, .. } => {
+                recording = false;
+                preview_display.finish();
+                println!("final: {}", result.transcript.text);
+            }
+            Event::Error { error, .. } => {
+                recording = false;
+                preview_display.finish();
+                println!("error: {} ({})", error.message, error.code);
+            }
+        }
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct PreviewDisplay {
+    stable: String,
+    provisional: String,
+    active: bool,
+}
+
+impl PreviewDisplay {
+    fn begin(&mut self) {
+        self.stable.clear();
+        self.provisional.clear();
+        self.active = true;
+        self.redraw(true);
+    }
+
+    fn update(&mut self, stable: &str, provisional: &str, speech_active: bool) {
+        if !self.active {
+            self.begin();
+        }
+        let changed = self.stable != stable || self.provisional != provisional;
+        stable.clone_into(&mut self.stable);
+        provisional.clone_into(&mut self.provisional);
+        if changed || (speech_active && self.stable.is_empty() && self.provisional.is_empty()) {
+            self.redraw(speech_active);
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.active {
+            println!();
+            self.active = false;
+            self.stable.clear();
+            self.provisional.clear();
+        }
+    }
+
+    fn redraw(&self, speech_active: bool) {
+        let mut line = String::from("\r\x1b[2Kpreview: ");
+        if self.stable.is_empty() && self.provisional.is_empty() {
+            line.push_str(if speech_active { "…" } else { "(quiet)" });
+        } else {
+            line.push_str(&self.stable);
+            if !self.provisional.is_empty() {
+                if !self.stable.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str("\x1b[2m");
+                line.push_str(&self.provisional);
+                line.push_str("\x1b[0m");
+            }
+        }
+        print!("{line}");
+        std::io::stdout().flush().ok();
+    }
 }
 
 async fn write_request(
@@ -535,6 +654,17 @@ fn print_cleanup_response(response: &Response) {
     print_response(response);
 }
 
+fn preview_doctor_report(config: &Config) -> Option<PreviewReport> {
+    config.preview.enabled.then(|| {
+        let preview_model_path = paths::expand_home(&config.preview.effective_model_path());
+        PreviewReport {
+            model_path: preview_model_path.display().to_string(),
+            model_exists: preview_model_path.is_file(),
+            gpu_requested: config.preview.gpu,
+        }
+    })
+}
+
 async fn doctor(json: bool) -> Result<()> {
     let config = Config::load_or_default()?;
     let config_valid = config.validate().is_ok();
@@ -561,6 +691,7 @@ async fn doctor(json: bool) -> Result<()> {
     let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
     let trigger = trigger_guidance(session, desktop);
     let model_path = paths::expand_home(&config.asr.model_path);
+    let preview = preview_doctor_report(&config);
     let secret_status = secrets::secret_status(&config.secrets);
     let cleanup_warning = if config.cleanup.enabled {
         Some("Warning: transcript text is sent to the configured cleanup provider.".into())
@@ -595,6 +726,7 @@ async fn doctor(json: bool) -> Result<()> {
             gpu_requested: config.asr.gpu,
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
         },
+        preview,
         paste: voxline_platform::paste_report(),
         secrets: secret_status,
         cleanup_provider: config.cleanup.provider.clone(),
@@ -764,6 +896,12 @@ fn print_doctor(report: &DoctorReport) {
     println!("  Model exists: {}", yes_no(report.asr.model_exists));
     println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
     println!("  Lifecycle: {}", report.asr.lifecycle_mode);
+    if let Some(preview) = &report.preview {
+        println!("Preview:");
+        println!("  Model: {}", preview.model_path);
+        println!("  Model exists: {}", yes_no(preview.model_exists));
+        println!("  GPU requested: {}", yes_no(preview.gpu_requested));
+    }
     println!("Paste:");
     println!("  Backend: {}", report.paste.backend);
     println!(
