@@ -84,6 +84,7 @@ pub enum EventKind {
     State,
     Result,
     Error,
+    Preview,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -247,6 +248,14 @@ pub enum Event {
         protocol_version: u32,
         timestamp_ms: u64,
         result: DictationResult,
+    },
+    Preview {
+        protocol_version: u32,
+        timestamp_ms: u64,
+        job_id: JobId,
+        stable: String,
+        provisional: String,
+        speech_active: bool,
     },
 }
 
