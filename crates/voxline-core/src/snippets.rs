@@ -7,6 +7,18 @@ use crate::{config::PathsConfig, paths};
 
 pub const INSERT_SNIPPET_TYPE: &str = "insert";
 
+#[derive(Deserialize)]
+struct SnippetTypeProbe {
+    #[serde(rename = "type")]
+    snippet_type: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnippetKind {
+    Insert,
+    Template,
+}
+
 const NEW_SNIPPET_CONTENT_TEMPLATE: &str = "Replace this text with your snippet content.";
 
 #[derive(Debug, Error)]
@@ -51,6 +63,7 @@ pub struct InsertSnippetMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnippetSummary {
     pub name: String,
+    pub kind: SnippetKind,
     pub aliases: Vec<String>,
 }
 
@@ -89,10 +102,19 @@ pub fn list_snippets(paths: &PathsConfig) -> Result<Vec<SnippetSummary>, Snippet
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
             continue;
         };
-        let metadata = read_metadata(paths, stem)?;
+        let kind = snippet_kind(paths, stem)?;
+        let aliases = match kind {
+            SnippetKind::Insert => read_insert_metadata(paths, stem)?.aliases,
+            SnippetKind::Template => {
+                crate::snippet_templates::load_template_metadata(paths, stem)
+                    .map_err(|error| SnippetError::Validation(error.to_string()))?
+                    .aliases
+            }
+        };
         snippets.push(SnippetSummary {
-            name: metadata.name,
-            aliases: metadata.aliases,
+            name: stem.to_owned(),
+            kind,
+            aliases,
         });
     }
     snippets.sort_by(|left, right| left.name.cmp(&right.name));
@@ -127,9 +149,29 @@ pub fn create_snippet(paths: &PathsConfig, name: &str) -> Result<(), SnippetErro
     Ok(())
 }
 
+pub fn snippet_kind(paths: &PathsConfig, name: &str) -> Result<SnippetKind, SnippetError> {
+    validate_snippet_name(name)?;
+    let snippet_type = read_snippet_type(paths, name)?;
+    match snippet_type.as_str() {
+        INSERT_SNIPPET_TYPE => Ok(SnippetKind::Insert),
+        crate::snippet_templates::TEMPLATE_SNIPPET_TYPE => Ok(SnippetKind::Template),
+        other => Err(SnippetError::Validation(format!(
+            "unsupported snippet type '{other}'"
+        ))),
+    }
+}
+
 pub fn validate_snippet(paths: &PathsConfig, name: &str) -> Result<(), SnippetError> {
     validate_snippet_name(name)?;
-    let _ = load_snippet_content(paths, name)?;
+    match snippet_kind(paths, name)? {
+        SnippetKind::Insert => {
+            let _ = load_snippet_content(paths, name)?;
+        }
+        SnippetKind::Template => {
+            crate::snippet_templates::validate_template_snippet(paths, name)
+                .map_err(|error| SnippetError::Validation(error.to_string()))?;
+        }
+    }
     Ok(())
 }
 
@@ -155,8 +197,13 @@ pub fn validate_installed_snippets(paths: &PathsConfig) -> Vec<SnippetValidation
 
 pub fn load_snippet_content(paths: &PathsConfig, name: &str) -> Result<String, SnippetError> {
     validate_snippet_name(name)?;
-    let metadata = read_metadata(paths, name)?;
-    validate_metadata_contents(&metadata)?;
+    if snippet_kind(paths, name)? != SnippetKind::Insert {
+        return Err(SnippetError::Validation(
+            "snippet is a template; use template preview or dictation routing".into(),
+        ));
+    }
+    let metadata = read_insert_metadata(paths, name)?;
+    validate_insert_metadata_contents(&metadata)?;
     let content_path = paths::snippets_dir(paths).join(&metadata.content_file);
     if !content_path.is_file() {
         return Err(SnippetError::Read {
@@ -174,7 +221,28 @@ pub fn load_snippet_content(paths: &PathsConfig, name: &str) -> Result<String, S
     Ok(content)
 }
 
-fn read_metadata(paths: &PathsConfig, name: &str) -> Result<InsertSnippetMetadata, SnippetError> {
+fn read_snippet_type(paths: &PathsConfig, name: &str) -> Result<String, SnippetError> {
+    let metadata_path = paths::snippets_dir(paths).join(format!("{name}.toml"));
+    if !metadata_path.is_file() {
+        return Err(SnippetError::NotFound(name.into()));
+    }
+    let metadata_text =
+        fs::read_to_string(&metadata_path).map_err(|source| SnippetError::Read {
+            path: metadata_path.clone(),
+            source,
+        })?;
+    let probe: SnippetTypeProbe =
+        toml::from_str(&metadata_text).map_err(|source| SnippetError::InvalidMetadata {
+            path: metadata_path,
+            source,
+        })?;
+    Ok(probe.snippet_type)
+}
+
+fn read_insert_metadata(
+    paths: &PathsConfig,
+    name: &str,
+) -> Result<InsertSnippetMetadata, SnippetError> {
     let metadata_path = paths::snippets_dir(paths).join(format!("{name}.toml"));
     if !metadata_path.is_file() {
         return Err(SnippetError::NotFound(name.into()));
@@ -195,14 +263,14 @@ fn read_metadata(paths: &PathsConfig, name: &str) -> Result<InsertSnippetMetadat
             metadata.name
         )));
     }
-    validate_metadata_contents(&metadata)?;
+    validate_insert_metadata_contents(&metadata)?;
     Ok(metadata)
 }
 
-fn validate_metadata_contents(metadata: &InsertSnippetMetadata) -> Result<(), SnippetError> {
+fn validate_insert_metadata_contents(metadata: &InsertSnippetMetadata) -> Result<(), SnippetError> {
     if metadata.snippet_type != INSERT_SNIPPET_TYPE {
         return Err(SnippetError::Validation(format!(
-            "unsupported snippet type '{}'; only '{INSERT_SNIPPET_TYPE}' is supported in v1.2",
+            "expected insert snippet, found '{}'",
             metadata.snippet_type
         )));
     }
@@ -233,7 +301,7 @@ fn write_metadata(path: &PathBuf, metadata: &InsertSnippetMetadata) -> Result<()
     })
 }
 
-fn validate_snippet_name(name: &str) -> Result<(), SnippetError> {
+pub(crate) fn validate_snippet_name(name: &str) -> Result<(), SnippetError> {
     let name = name.trim();
     if name.is_empty()
         || name.contains('/')
@@ -287,25 +355,15 @@ mod tests {
     }
 
     #[test]
-    fn rejects_template_snippet_type() {
+    fn validates_template_snippet_separately() {
         let base = std::env::temp_dir().join(format!("voxline-snippets-{}", ulid::Ulid::new()));
         let paths = temp_paths(&base);
-        ensure_snippets_dir(&paths).unwrap();
-        let snippets_dir = paths::snippets_dir(&paths);
-        fs::write(
-            snippets_dir.join("standup.toml"),
-            r#"
-name = "standup"
-type = "template"
-content_file = "standup.md"
-"#,
-        )
-        .unwrap();
-        fs::write(snippets_dir.join("standup.md"), "yesterday").unwrap();
-        assert!(matches!(
-            validate_snippet(&paths, "standup"),
-            Err(SnippetError::Validation(_))
-        ));
+        crate::snippet_templates::create_template_snippet(&paths, "standup").unwrap();
+        assert_eq!(
+            snippet_kind(&paths, "standup").unwrap(),
+            SnippetKind::Template
+        );
+        validate_snippet(&paths, "standup").unwrap();
         let _ = fs::remove_dir_all(&base);
     }
 }

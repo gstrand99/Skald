@@ -1,0 +1,23 @@
+name = "standup"
+type = "template"
+aliases = ["standup"]
+template_file = "standup.md"
+
+[[fields]]
+name = "yesterday"
+required = true
+
+[[fields]]
+name = "today"
+required = true
+
+[[fields]]
+name = "blocked"
+required = false
+fallback = "None"
+
+[validation]
+max_total_chars = 4000
+
+[fallback]
+on_extract_failure = "error"
