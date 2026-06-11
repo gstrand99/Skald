@@ -50,6 +50,7 @@ pub struct Config {
     pub privacy: PrivacyConfig,
     pub voice_commands: VoiceCommandsConfig,
     pub preview: PreviewConfig,
+    pub overlay: OverlayConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -128,6 +129,29 @@ impl PreviewConfig {
                 idle_unload_seconds: 900,
             },
             ..asr.clone()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct OverlayConfig {
+    pub margin_px: u32,
+    pub max_width_px: u32,
+    /// top | bottom | auto (cursor-aware on supported compositors)
+    pub anchor: String,
+    pub use_layer_shell: bool,
+    pub hide_when_idle: bool,
+}
+
+impl Default for OverlayConfig {
+    fn default() -> Self {
+        Self {
+            margin_px: 16,
+            max_width_px: 720,
+            anchor: "auto".into(),
+            use_layer_shell: true,
+            hide_when_idle: true,
         }
     }
 }
@@ -597,32 +621,43 @@ impl Config {
         }
         commands::validate_voice_commands(&self.voice_commands, &self.paths)
             .map_err(|error| ConfigError::Validation(format!("voice_commands: {error}")))?;
-        if self.preview.enabled {
-            if self.preview.chunk_ms == 0 || self.preview.step_ms == 0 {
-                return Err(ConfigError::Validation(
-                    "preview chunk_ms and step_ms must be greater than zero".into(),
-                ));
-            }
-            if self.preview.overlap_ms >= self.preview.chunk_ms {
-                return Err(ConfigError::Validation(
-                    "preview overlap_ms must be less than chunk_ms".into(),
-                ));
-            }
-            if self.preview.ring_buffer_seconds == 0 {
-                return Err(ConfigError::Validation(
-                    "preview ring_buffer_seconds must be greater than zero".into(),
-                ));
-            }
-            let preview_model = paths::expand_home(&self.preview.effective_model_path());
-            if !preview_model.is_file() {
-                return Err(ConfigError::Validation(format!(
-                    "preview model not found at {}",
-                    preview_model.display()
-                )));
-            }
-        }
+        validate_overlay_and_preview(self)?;
         validate_layout_files(self)
     }
+}
+
+fn validate_overlay_and_preview(config: &Config) -> Result<(), ConfigError> {
+    if !matches!(config.overlay.anchor.as_str(), "top" | "bottom" | "auto") {
+        return Err(ConfigError::Validation(
+            "overlay.anchor must be top, bottom, or auto".into(),
+        ));
+    }
+    if !config.preview.enabled {
+        return Ok(());
+    }
+    if config.preview.chunk_ms == 0 || config.preview.step_ms == 0 {
+        return Err(ConfigError::Validation(
+            "preview chunk_ms and step_ms must be greater than zero".into(),
+        ));
+    }
+    if config.preview.overlap_ms >= config.preview.chunk_ms {
+        return Err(ConfigError::Validation(
+            "preview overlap_ms must be less than chunk_ms".into(),
+        ));
+    }
+    if config.preview.ring_buffer_seconds == 0 {
+        return Err(ConfigError::Validation(
+            "preview ring_buffer_seconds must be greater than zero".into(),
+        ));
+    }
+    let preview_model = paths::expand_home(&config.preview.effective_model_path());
+    if !preview_model.is_file() {
+        return Err(ConfigError::Validation(format!(
+            "preview model not found at {}",
+            preview_model.display()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_cleanup_styles(config: &Config) -> Result<(), ConfigError> {

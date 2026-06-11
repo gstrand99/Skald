@@ -250,6 +250,95 @@ pub fn paste_reason_for_backend(
 }
 
 #[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlaySessionHint {
+    pub id: &'static str,
+    pub detail: &'static str,
+    pub layer_shell_recommended: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverlayPlacementHint {
+    pub cursor_x: i32,
+    pub cursor_y: i32,
+    pub monitor_x: i32,
+    pub monitor_y: i32,
+    pub monitor_width: i32,
+    pub monitor_height: i32,
+}
+
+impl OverlayPlacementHint {
+    #[must_use]
+    pub fn monitor_local_x(&self) -> i32 {
+        self.cursor_x - self.monitor_x
+    }
+
+    #[must_use]
+    pub fn monitor_local_y(&self) -> i32 {
+        self.cursor_y - self.monitor_y
+    }
+
+    /// Prefer placing the overlay below the cursor when there is more room beneath it.
+    #[must_use]
+    pub fn prefer_below_cursor(&self) -> bool {
+        let local_y = self.monitor_local_y();
+        local_y + 120 <= self.monitor_height || local_y < self.monitor_height / 2
+    }
+}
+
+#[must_use]
+pub fn capture_overlay_placement_hint() -> Option<OverlayPlacementHint> {
+    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+    let desktop = env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if session == "x11" {
+        return capture_x11_placement();
+    }
+    if desktop.contains("hyprland") {
+        return capture_hyprland_placement();
+    }
+    None
+}
+
+pub fn overlay_session_hint() -> OverlaySessionHint {
+    let environment = environment_report();
+    let session = environment.session_type.as_deref().unwrap_or("unknown");
+    let desktop = environment
+        .desktop
+        .as_deref()
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    if session == "wayland" && desktop.contains("gnome") {
+        OverlaySessionHint {
+            id: "gnome_wayland",
+            detail: "GNOME Wayland/Mutter does not expose wlr-layer-shell; overlay uses a floating window",
+            layer_shell_recommended: false,
+        }
+    } else if session == "wayland"
+        && (desktop.contains("hyprland") || desktop.contains("sway") || desktop.contains("river"))
+    {
+        OverlaySessionHint {
+            id: "layer_shell",
+            detail: "wlroots-style compositor; layer-shell overlay recommended",
+            layer_shell_recommended: true,
+        }
+    } else if session == "x11" {
+        OverlaySessionHint {
+            id: "x11",
+            detail: "X11 session; overlay uses a floating window",
+            layer_shell_recommended: false,
+        }
+    } else {
+        OverlaySessionHint {
+            id: "unknown",
+            detail: "unknown session; overlay may have limited placement support",
+            layer_shell_recommended: false,
+        }
+    }
+}
+
+#[must_use]
 pub fn paste_report() -> PasteReport {
     let environment = environment_report();
     let desktop = environment.desktop.as_deref().unwrap_or("unknown");
@@ -391,6 +480,75 @@ struct HyprlandWindow {
     address: String,
     class: String,
     title: String,
+}
+
+#[derive(Deserialize)]
+struct HyprlandMonitor {
+    x: i32,
+    y: i32,
+    width: i32,
+    height: i32,
+}
+
+fn capture_hyprland_placement() -> Option<OverlayPlacementHint> {
+    let pos = command_stdout("hyprctl", &["cursorpos"])?;
+    let (cursor_x, cursor_y) = parse_xy_pair(&pos)?;
+    let output = Command::new("hyprctl")
+        .args(["monitors", "-j"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let monitors: Vec<HyprlandMonitor> = serde_json::from_slice(&output.stdout).ok()?;
+    let monitor = monitors.into_iter().find(|monitor| {
+        cursor_x >= monitor.x
+            && cursor_x < monitor.x + monitor.width
+            && cursor_y >= monitor.y
+            && cursor_y < monitor.y + monitor.height
+    })?;
+    Some(OverlayPlacementHint {
+        cursor_x,
+        cursor_y,
+        monitor_x: monitor.x,
+        monitor_y: monitor.y,
+        monitor_width: monitor.width,
+        monitor_height: monitor.height,
+    })
+}
+
+fn capture_x11_placement() -> Option<OverlayPlacementHint> {
+    let output = command_stdout("xdotool", &["getmouselocation", "--shell"])?;
+    let mut x = None;
+    let mut y = None;
+    for line in output.lines() {
+        if let Some(value) = line.strip_prefix("X=") {
+            x = value.parse().ok();
+        } else if let Some(value) = line.strip_prefix("Y=") {
+            y = value.parse().ok();
+        }
+    }
+    let (cursor_x, cursor_y) = (x?, y?);
+    let geometry =
+        command_stdout("xdotool", &["getdisplaygeometry"]).unwrap_or_else(|| "1920 1080".into());
+    let mut parts = geometry.split_whitespace();
+    let monitor_width = parts.next()?.parse().ok()?;
+    let monitor_height = parts.next()?.parse().ok()?;
+    Some(OverlayPlacementHint {
+        cursor_x,
+        cursor_y,
+        monitor_x: 0,
+        monitor_y: 0,
+        monitor_width,
+        monitor_height,
+    })
+}
+
+fn parse_xy_pair(text: &str) -> Option<(i32, i32)> {
+    let mut parts = text.split([',', ' ']).filter(|part| !part.is_empty());
+    let x = parts.next()?.parse().ok()?;
+    let y = parts.next()?.parse().ok()?;
+    Some((x, y))
 }
 
 fn capture_hyprland_target() -> Option<TargetContext> {
