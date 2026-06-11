@@ -7,6 +7,9 @@
 #   voxline config validate
 #   voxline doctor
 
+# Schema version for future migrations. Must be 1 in v1.
+config_version = 1
+
 [daemon]
 log_level = "info"
 max_concurrent_jobs = 1
@@ -128,9 +131,12 @@ optional_paste_command = ""
 enabled = true
 
 [privacy]
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_history = false
 store_audio = false
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_raw_transcript = false
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_cleaned_transcript = false
 log_transcripts = false
 # Include transcript text in broadcast result events (debug only; default false).

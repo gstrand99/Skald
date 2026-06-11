@@ -6,6 +6,8 @@ description: Local storage and transcript logging controls.
 All options default to **off** for a local-first, privacy-safe baseline.
 
 ```toml
+config_version = 1
+
 [privacy]
 store_history = false
 store_audio = false
@@ -14,19 +16,23 @@ store_cleaned_transcript = false
 log_transcripts = false
 ```
 
+`config_version` must be `1` in v1. Future releases may use it for migrations.
+
 ## Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `store_history` | boolean | `false` | Reserved for future persistent dictation history. v1 does not write history files when false. |
+| `store_history` | boolean | `false` | **Reserved / not implemented.** Must stay `false`; validation rejects `true`. |
 | `store_audio` | boolean | `false` | When false, temporary WAV files are deleted after jobs complete (unless a code path explicitly retains them, such as setup fixtures). When true, retain recorded audio on disk. |
-| `store_raw_transcript` | boolean | `false` | Reserved for persisting raw ASR output to disk. |
-| `store_cleaned_transcript` | boolean | `false` | Reserved for persisting cleanup output to disk. |
+| `store_raw_transcript` | boolean | `false` | **Reserved / not implemented.** Must stay `false`; validation rejects `true`. |
+| `store_cleaned_transcript` | boolean | `false` | **Reserved / not implemented.** Must stay `false`; validation rejects `true`. |
 | `log_transcripts` | boolean | `false` | When true, daemon debug logs may include transcript text. **Keep false** unless debugging in a controlled environment. |
 
 ## Doctor and warnings
 
-`voxline doctor` reports when any sensitive storage or logging option is enabled.
+`voxline doctor` reports when `store_audio`, `log_transcripts`, or
+`emit_transcript_in_events` is enabled. Reserved storage flags are not treated as
+active controls.
 
 Cloud cleanup is configured separately in `[cleanup]` and sends transcript text off-device only when cleanup runs—not via these flags.
 
