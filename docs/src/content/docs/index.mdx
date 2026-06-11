@@ -1,0 +1,45 @@
+---
+title: Introduction
+description: Local-first dictation for Linux with optional cloud cleanup.
+---
+
+VoxLine is a Linux-first, local-first dictation daemon and CLI. It records speech,
+transcribes with a local Whisper model, copies the result to the clipboard, and
+pastes only when the active target can be verified as stable.
+
+## How it works
+
+1. Bind a compositor shortcut to `voxline toggle` (or use push-to-talk with
+   `voxline start` / `voxline stop`).
+2. `voxlined` captures audio, runs ASR, optionally cleans up transcript text, and
+   delivers output to the clipboard.
+3. Safe paste inserts text only when the window you dictated into is still the
+   active, known target.
+
+## Privacy defaults
+
+- No transcript or audio storage by default.
+- Cloud cleanup (OpenRouter) is **opt-in** and sends transcript text only—not audio.
+- The daemon socket is user-owned (`0600`) under your runtime directory.
+
+## Quick start
+
+```bash
+just release-cuda          # or just release for CPU-only
+just install               # ~/.local/bin + setup wizard when unconfigured
+voxline doctor
+```
+
+Use the [Install](/install/) guide for dependencies and manual setup, or the
+[Setup wizard](/setup/) for guided model selection and benchmarks.
+
+## What to read next
+
+| Topic | Page |
+|-------|------|
+| Build, install, profiles | [Install](/install/) |
+| First-run wizard | [Setup wizard](/setup/) |
+| `config.toml` reference | [Configuration](/configuration/) |
+| Commands | [CLI reference](/cli/) |
+| systemd + keybindings | [Service & shortcuts](/service/) |
+| Doctor and failure modes | [Troubleshooting](/troubleshooting/) |

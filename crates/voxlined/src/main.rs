@@ -11,7 +11,7 @@ use std::{
     fs,
     path::Path,
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -31,11 +31,11 @@ use voxline_core::{
         NotificationsConfig, PathsConfig, PrivacyConfig, SecretsConfig, VoiceCommandsConfig,
     },
     protocol::{
-        AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, EventKind,
-        JobId, JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response,
-        SessionEnvironment, Transcript,
+        AsrBenchCandidate, AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult,
+        Event, EventKind, JobId, JobState, ModelBenchResult, ModelState, PROTOCOL_VERSION,
+        ProtocolError, Request, Response, SessionEnvironment, Transcript,
     },
-    runtime::{ensure_runtime_dir_for, socket_path_for},
+    runtime::{ensure_runtime_dir_for, secure_socket_permissions, socket_path_for},
 };
 
 #[derive(Debug, Parser)]
@@ -79,6 +79,7 @@ async fn main() -> Result<()> {
     remove_stale_socket(&socket)?;
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to bind {}", socket.display()))?;
+    secure_socket_permissions(&socket).context("failed to secure daemon socket permissions")?;
     let (events, _) = broadcast::channel(32);
     let audio_gates = config.audio.gates.clone();
     let paste_available = voxline_platform::paste_backend().is_some();
@@ -166,6 +167,8 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
                     session_environment: None,
                     cleaned_text: None,
                     cleanup_ms: None,
+                    dictation: None,
+                    model_bench_results: None,
                 };
                 write_json_line(&mut writer, &response).await?;
                 continue;
@@ -222,6 +225,38 @@ async fn dispatch(request: Request, state: Arc<AppState>) -> Response {
         Command::Transcribe { audio_path } => {
             transcribe(request.request_id, &state, audio_path).await
         }
+        Command::BenchDictation {
+            audio_path,
+            cleanup,
+            attempt_paste,
+        } => {
+            bench_dictation(
+                request.request_id,
+                &state,
+                audio_path,
+                cleanup,
+                attempt_paste,
+            )
+            .await
+        }
+        Command::SetupRecord {
+            seconds,
+            output_path,
+        } => setup_record(request.request_id, &state, seconds, output_path).await,
+        Command::BenchModelCompare {
+            audio_path,
+            candidates,
+            include_cold_load,
+        } => {
+            bench_model_compare(
+                request.request_id,
+                &state,
+                audio_path,
+                candidates,
+                include_cold_load,
+            )
+            .await
+        }
         Command::AsrLoad => asr_load(request.request_id, &state).await,
         Command::AsrUnload => asr_unload(request.request_id, &state).await,
         Command::AsrRestart => asr_restart(request.request_id, &state).await,
@@ -251,6 +286,8 @@ fn daemon_environment_response(request_id: String, status: DaemonStatus) -> Resp
         session_environment: Some(current_session_environment()),
         cleaned_text: None,
         cleanup_ms: None,
+        dictation: None,
+        model_bench_results: None,
     }
 }
 
@@ -285,6 +322,20 @@ fn data_response(
     transcript: Option<Transcript>,
     benchmark: Option<AsrBenchmark>,
 ) -> Response {
+    data_response_with(
+        request_id, status, recording, transcript, benchmark, None, None,
+    )
+}
+
+fn data_response_with(
+    request_id: String,
+    status: DaemonStatus,
+    recording: Option<AudioRecording>,
+    transcript: Option<Transcript>,
+    benchmark: Option<AsrBenchmark>,
+    cleanup_ms: Option<u64>,
+    dictation: Option<DictationResult>,
+) -> Response {
     Response {
         protocol_version: PROTOCOL_VERSION,
         request_id,
@@ -296,7 +347,9 @@ fn data_response(
         error: None,
         session_environment: None,
         cleaned_text: None,
-        cleanup_ms: None,
+        cleanup_ms,
+        dictation,
+        model_bench_results: None,
     }
 }
 
@@ -321,6 +374,8 @@ fn error_response(
         session_environment: None,
         cleaned_text: None,
         cleanup_ms: None,
+        dictation: None,
+        model_bench_results: None,
     }
 }
 
@@ -351,6 +406,212 @@ fn reload_job_config() -> (
             )
         },
     )
+}
+
+async fn bench_dictation(
+    request_id: String,
+    state: &AppState,
+    audio_path: std::path::PathBuf,
+    cleanup: Option<voxline_core::cleanup::CleanupOverride>,
+    attempt_paste: bool,
+) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    let config = Config::load_or_default().unwrap_or_default();
+    let recording = match audio::recording_from_existing_wav(
+        &audio_path,
+        &config.audio.gates,
+        config.audio.target_sample_rate,
+    ) {
+        Ok(recording) => recording,
+        Err(error) => {
+            return error_response(
+                request_id,
+                "bench_audio_invalid",
+                &error.to_string(),
+                Some(state.status.read().await.clone()),
+            );
+        }
+    };
+    if let Some(cleanup) = cleanup {
+        *state.cleanup_override.lock().await = Some(cleanup);
+    }
+    let target_at_stop = if attempt_paste {
+        voxline_platform::capture_active_target()
+    } else {
+        None
+    };
+    finish_dictation(
+        request_id,
+        state,
+        recording,
+        target_at_stop,
+        Instant::now(),
+        attempt_paste,
+        true,
+    )
+    .await
+}
+
+async fn setup_record(
+    request_id: String,
+    state: &AppState,
+    seconds: u64,
+    output_path: std::path::PathBuf,
+) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    let job_id = JobId::new();
+    if let Err(error) = state.audio.start(job_id.clone(), None).await {
+        return audio_error_response(request_id, state, error).await;
+    }
+    let status = update_state(state, Some(job_id.clone()), JobState::Recording).await;
+    let _ = status;
+    tokio::time::sleep(Duration::from_secs(seconds.max(1))).await;
+    state.preview.stop().await;
+    let recording = match state.audio.stop(job_id).await {
+        Ok(recording) => recording,
+        Err(error) => {
+            let _ = update_state(state, None, JobState::Idle).await;
+            return audio_error_response(request_id, state, error).await;
+        }
+    };
+    let status = update_state(state, None, JobState::Idle).await;
+    if !recording.speech_detected {
+        return error_response(
+            request_id,
+            "no_speech",
+            "recording was too short or quiet to transcribe",
+            Some(status),
+        );
+    }
+    if let Some(parent) = output_path.parent()
+        && let Err(error) = fs::create_dir_all(parent)
+    {
+        return error_response(
+            request_id,
+            "setup_record_failed",
+            &error.to_string(),
+            Some(status),
+        );
+    }
+    if let Err(error) = fs::copy(&recording.wav_path, &output_path) {
+        return error_response(
+            request_id,
+            "setup_record_failed",
+            &error.to_string(),
+            Some(status),
+        );
+    }
+    let _ = fs::remove_file(&recording.wav_path);
+    let mut saved = recording;
+    saved.wav_path = output_path;
+    success_response(request_id, status, Some(saved))
+}
+
+async fn bench_model_compare(
+    request_id: String,
+    state: &AppState,
+    audio_path: std::path::PathBuf,
+    candidates: Vec<AsrBenchCandidate>,
+    include_cold_load: bool,
+) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    if candidates.is_empty() {
+        return error_response(
+            request_id,
+            "bench_no_candidates",
+            "no models were provided for comparison",
+            Some(state.status.read().await.clone()),
+        );
+    }
+    let base_config = Config::load_or_default().unwrap_or_default().asr;
+    let mut results = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let mut asr_config = base_config.clone();
+        asr_config.model_path = candidate.model_path.display().to_string();
+        asr_config.gpu = candidate.gpu;
+        asr_config.lifecycle.mode = "on_demand".into();
+        asr_config.lifecycle.idle_unload_seconds = 0;
+
+        let cold_load_ms = if include_cold_load {
+            let _ = state.asr.unload().await;
+            match state.asr.reload(asr_config.clone()).await {
+                Ok(ms) => ms,
+                Err(error) => {
+                    results.push(ModelBenchResult {
+                        model_id: candidate.model_id.clone(),
+                        cold_load_ms: 0,
+                        warm_transcribe_ms: 0,
+                        audio_duration_ms: 0,
+                        transcript_text: String::new(),
+                        error: Some(error.to_string()),
+                    });
+                    continue;
+                }
+            }
+        } else {
+            match state.asr.reload(asr_config.clone()).await {
+                Ok(ms) => ms,
+                Err(error) => {
+                    results.push(ModelBenchResult {
+                        model_id: candidate.model_id.clone(),
+                        cold_load_ms: 0,
+                        warm_transcribe_ms: 0,
+                        audio_duration_ms: 0,
+                        transcript_text: String::new(),
+                        error: Some(error.to_string()),
+                    });
+                    continue;
+                }
+            }
+        };
+
+        match state.asr.transcribe(audio_path.clone()).await {
+            Ok((transcript, benchmark)) => {
+                results.push(ModelBenchResult {
+                    model_id: candidate.model_id,
+                    cold_load_ms,
+                    warm_transcribe_ms: benchmark.transcribe_ms,
+                    audio_duration_ms: benchmark.audio_duration_ms,
+                    transcript_text: transcript.text,
+                    error: None,
+                });
+            }
+            Err(error) => {
+                results.push(ModelBenchResult {
+                    model_id: candidate.model_id,
+                    cold_load_ms,
+                    warm_transcribe_ms: 0,
+                    audio_duration_ms: 0,
+                    transcript_text: String::new(),
+                    error: Some(error.to_string()),
+                });
+            }
+        }
+        let _ = state.asr.unload().await;
+    }
+    let _ = state.asr.reload(base_config).await;
+    let status = state.status.read().await.clone();
+    Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id,
+        ok: true,
+        status: Some(status),
+        recording: None,
+        transcript: None,
+        benchmark: None,
+        error: None,
+        session_environment: None,
+        cleaned_text: None,
+        cleanup_ms: None,
+        dictation: None,
+        model_bench_results: Some(results),
+    }
 }
 
 async fn transcribe(
@@ -558,7 +819,16 @@ async fn stop(request_id: String, state: &AppState) -> Response {
     update_state(state, Some(job_id.clone()), JobState::Stopping).await;
     match state.audio.stop(job_id).await {
         Ok(recording) => {
-            finish_dictation(request_id, state, recording, target_at_stop, started).await
+            finish_dictation(
+                request_id,
+                state,
+                recording,
+                target_at_stop,
+                started,
+                true,
+                false,
+            )
+            .await
         }
         Err(error) => audio_error_response(request_id, state, error).await,
     }
@@ -571,8 +841,13 @@ async fn finish_dictation(
     recording: AudioRecording,
     target_at_stop: Option<voxline_platform::TargetContext>,
     started: Instant,
+    attempt_paste: bool,
+    retain_audio_file: bool,
 ) -> Response {
-    let _audio_cleanup = TemporaryAudio::new(recording.wav_path.clone(), state.privacy.store_audio);
+    let _audio_cleanup = TemporaryAudio::new(
+        recording.wav_path.clone(),
+        state.privacy.store_audio || retain_audio_file,
+    );
     if !recording.speech_detected {
         if state.notifications.enabled && state.audio_gates.notify_on_no_speech {
             voxline_platform::notify("VoxLine", "No speech detected");
@@ -620,8 +895,12 @@ async fn finish_dictation(
         .as_ref()
         .and_then(|profile| profile.injection.prefer_clipboard_only)
         .unwrap_or(false);
-    let voice_command_outcome =
-        apply_voice_commands(&voice_commands_config, &paths_config, &transcript.text);
+    let voice_command_outcome = apply_voice_commands(
+        &voice_commands_config,
+        &paths_config,
+        &transcript.text,
+        state.privacy.log_transcripts,
+    );
     let voice_style_override = voice_command_outcome.voice_style;
     let raw_text = voice_command_outcome.raw_text;
     if let Some(name) = voice_command_outcome.insert_snippet_only {
@@ -727,7 +1006,7 @@ async fn finish_dictation(
         &final_text,
         target_at_stop,
         started,
-        routing.prefer_clipboard_only,
+        routing.prefer_clipboard_only || !attempt_paste,
     )
     .await
     {
@@ -760,7 +1039,7 @@ async fn finish_dictation(
     let _ = state.events.send(Event::Result {
         protocol_version: PROTOCOL_VERSION,
         timestamp_ms: now_ms(),
-        result,
+        result: result.clone(),
     });
     if state.notifications.enabled {
         voxline_platform::notify(
@@ -776,12 +1055,18 @@ async fn finish_dictation(
     }
     update_state(state, Some(recording.job_id.clone()), JobState::Done).await;
     let status = update_state(state, None, JobState::Idle).await;
-    data_response(
+    data_response_with(
         request_id,
         status,
         Some(recording),
         Some(final_transcript),
         Some(benchmark),
+        if cleanup_outcome.used {
+            Some(cleanup_outcome.cleanup_ms)
+        } else {
+            None
+        },
+        Some(result),
     )
 }
 
@@ -828,6 +1113,8 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
                 session_environment: None,
                 cleaned_text: Some(outcome.text),
                 cleanup_ms: Some(outcome.cleanup_ms),
+                dictation: None,
+                model_bench_results: None,
             }
         }
         Err(error) => {
@@ -890,6 +1177,8 @@ async fn cleanup_preview(
                 session_environment: None,
                 cleaned_text: Some(outcome.text),
                 cleanup_ms: Some(outcome.cleanup_ms),
+                dictation: None,
+                model_bench_results: None,
             }
         }
         Err(error) => {
@@ -925,6 +1214,7 @@ fn apply_voice_commands(
     voice_commands_config: &VoiceCommandsConfig,
     paths_config: &PathsConfig,
     transcript: &str,
+    log_transcripts: bool,
 ) -> VoiceCommandOutcome {
     let mut outcome = VoiceCommandOutcome {
         raw_text: transcript.to_owned(),
@@ -944,7 +1234,9 @@ fn apply_voice_commands(
         &registry,
         transcript.trim(),
     ) else {
-        tracing::debug!(transcript, "no voice command matched transcript");
+        if log_transcripts {
+            tracing::debug!(transcript, "no voice command matched transcript");
+        }
         return outcome;
     };
     outcome.raw_text.clone_from(&parsed.remainder);
@@ -1158,6 +1450,8 @@ async fn template_preview(
                 session_environment: None,
                 cleaned_text: Some(outcome.text),
                 cleanup_ms: Some(outcome.extract_ms),
+                dictation: None,
+                model_bench_results: None,
             }
         }
         Err(error) => {
@@ -1605,8 +1899,10 @@ impl TemporaryAudio {
 
 impl Drop for TemporaryAudio {
     fn drop(&mut self) {
-        if !self.retain
-            && let Err(error) = fs::remove_file(&self.path)
+        if self.retain {
+            return;
+        }
+        if let Err(error) = fs::remove_file(&self.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
             warn!(path = %self.path.display(), %error, "failed to delete temporary audio");

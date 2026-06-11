@@ -49,6 +49,23 @@ pub enum Command {
     Transcribe {
         audio_path: PathBuf,
     },
+    BenchDictation {
+        audio_path: PathBuf,
+        #[serde(default)]
+        cleanup: Option<CleanupOverride>,
+        #[serde(default = "default_true")]
+        attempt_paste: bool,
+    },
+    SetupRecord {
+        seconds: u64,
+        output_path: PathBuf,
+    },
+    BenchModelCompare {
+        audio_path: PathBuf,
+        candidates: Vec<AsrBenchCandidate>,
+        #[serde(default = "default_true")]
+        include_cold_load: bool,
+    },
     AsrStatus,
     AsrLoad,
     AsrUnload,
@@ -116,6 +133,14 @@ pub struct Response {
     pub cleaned_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cleanup_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dictation: Option<DictationResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_bench_results: Option<Vec<ModelBenchResult>>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +181,23 @@ pub struct AsrBenchmark {
     pub model_load_ms: u64,
     pub transcribe_ms: u64,
     pub audio_duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AsrBenchCandidate {
+    pub model_id: String,
+    pub model_path: PathBuf,
+    pub gpu: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelBenchResult {
+    pub model_id: String,
+    pub cold_load_ms: u64,
+    pub warm_transcribe_ms: u64,
+    pub audio_duration_ms: u64,
+    pub transcript_text: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
