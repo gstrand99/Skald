@@ -5,7 +5,7 @@ use thiserror::Error;
 
 pub use crate::secrets::SecretsConfig;
 use crate::{
-    apps,
+    apps, commands,
     paths::{self, scaffold_config_layout},
     snippets, styles,
 };
@@ -48,6 +48,23 @@ pub struct Config {
     pub injection: InjectionConfig,
     pub notifications: NotificationsConfig,
     pub privacy: PrivacyConfig,
+    pub voice_commands: VoiceCommandsConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct VoiceCommandsConfig {
+    pub enabled: bool,
+    pub prefix: String,
+}
+
+impl Default for VoiceCommandsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            prefix: "voxline".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -513,6 +530,8 @@ impl Config {
         if self.cleanup.enabled {
             validate_cleanup_styles(self)?;
         }
+        commands::validate_voice_commands(&self.voice_commands, &self.paths)
+            .map_err(|error| ConfigError::Validation(format!("voice_commands: {error}")))?;
         validate_layout_files(self)
     }
 }
