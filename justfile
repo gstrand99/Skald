@@ -81,6 +81,10 @@ styles-list: build
 apps-detect: build
     target/debug/voxline apps detect
 
+# List configured insert snippets.
+snippets-list: build
+    target/debug/voxline snippets list
+
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
     target/debug/voxline test openrouter

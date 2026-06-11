@@ -7,7 +7,7 @@ pub use crate::secrets::SecretsConfig;
 use crate::{
     apps,
     paths::{self, scaffold_config_layout},
-    styles,
+    snippets, styles,
 };
 
 #[derive(Debug, Error)]
@@ -386,6 +386,8 @@ impl Config {
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
         apps::ensure_default_app_profiles(&config.paths)
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        snippets::ensure_snippets_dir(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
         let text = toml::to_string_pretty(&config)
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
         fs::write(&path, text).map_err(|source| ConfigError::Write {
@@ -509,36 +511,53 @@ impl Config {
             ));
         }
         if self.cleanup.enabled {
-            styles::ensure_default_style_files(&self.paths).map_err(|error| {
-                ConfigError::Validation(format!("default style files: {error}"))
-            })?;
-            styles::validate_style(&self.paths, &self.cleanup.default_style).map_err(|error| {
-                ConfigError::Validation(format!(
-                    "cleanup.default_style '{}': {error}",
-                    self.cleanup.default_style
-                ))
-            })?;
-            if let Some(issue) = styles::validate_installed_styles(&self.paths)
-                .into_iter()
-                .next()
-            {
-                return Err(ConfigError::Validation(format!(
-                    "style {}: {}",
-                    issue.style, issue.message
-                )));
-            }
+            validate_cleanup_styles(self)?;
         }
-        if let Some(issue) = apps::validate_installed_app_profiles(&self.paths)
-            .into_iter()
-            .next()
-        {
-            return Err(ConfigError::Validation(format!(
-                "app {}: {}",
-                issue.app, issue.message
-            )));
-        }
-        Ok(())
+        validate_layout_files(self)
     }
+}
+
+fn validate_cleanup_styles(config: &Config) -> Result<(), ConfigError> {
+    styles::ensure_default_style_files(&config.paths)
+        .map_err(|error| ConfigError::Validation(format!("default style files: {error}")))?;
+    styles::validate_style(&config.paths, &config.cleanup.default_style).map_err(|error| {
+        ConfigError::Validation(format!(
+            "cleanup.default_style '{}': {error}",
+            config.cleanup.default_style
+        ))
+    })?;
+    if let Some(issue) = styles::validate_installed_styles(&config.paths)
+        .into_iter()
+        .next()
+    {
+        return Err(ConfigError::Validation(format!(
+            "style {}: {}",
+            issue.style, issue.message
+        )));
+    }
+    Ok(())
+}
+
+fn validate_layout_files(config: &Config) -> Result<(), ConfigError> {
+    if let Some(issue) = apps::validate_installed_app_profiles(&config.paths)
+        .into_iter()
+        .next()
+    {
+        return Err(ConfigError::Validation(format!(
+            "app {}: {}",
+            issue.app, issue.message
+        )));
+    }
+    if let Some(issue) = snippets::validate_installed_snippets(&config.paths)
+        .into_iter()
+        .next()
+    {
+        return Err(ConfigError::Validation(format!(
+            "snippet {}: {}",
+            issue.snippet, issue.message
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
