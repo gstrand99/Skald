@@ -56,10 +56,28 @@ add more target-specific paste commands later.
 The product and architecture specification is in
 [`VoxLine_implementation_plan.md`](VoxLine_implementation_plan.md).
 
+## Cleanup (opt-in)
+
+Cleanup is disabled by default. To enable OpenRouter cleanup:
+
+```bash
+voxline secrets set openrouter
+voxline cleanup enable openrouter
+voxline cleanup preview "hey john thanks for catching that"
+voxline toggle --cleanup
+```
+
+The default cleanup model is `~openai/gpt-mini-latest` on OpenRouter. Override
+`cleanup.model` in `~/.config/voxline/config.toml` if needed.
+
+Cleanup sends transcript text to your configured provider, adds latency, and may
+cost money per request. Use `--no-cleanup` for sensitive content or when you want
+the raw transcript.
+
 ## Privacy
 
-VoxLine does not store transcripts or audio by default. Cloud cleanup is not
-implemented in this milestone and will remain opt-in when added.
+VoxLine does not store transcripts or audio by default. Cloud cleanup is opt-in
+and sends transcript text off-device only when explicitly enabled.
 
 ## License
 
