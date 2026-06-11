@@ -310,10 +310,8 @@ impl Worker {
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let text = filter_hallucination(
-            &apply_replacements(raw.trim(), &self.vocabulary),
-            &self.engine.config,
-        );
+        let replaced = apply_replacements(raw.trim(), &self.vocabulary);
+        let (text, segments) = apply_hallucination_filter(&replaced, segments, &self.engine.config);
         let transcript = Transcript {
             text,
             language: Some(self.engine.config.language.clone()),
@@ -433,20 +431,59 @@ fn replace_whole_words(input: &str, from: &str, to: &str, case_sensitive: bool) 
     output
 }
 
-fn filter_hallucination(input: &str, config: &AsrConfig) -> String {
-    if !config.hallucination_filter.enabled || input.split_whitespace().count() > 5 {
-        return input.to_owned();
+fn normalize_for_hallucination_match(input: &str) -> String {
+    input
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+        .trim_matches(|character: char| character.is_ascii_punctuation())
+        .to_owned()
+}
+
+fn phrase_matches_hallucination(transcript: &str, phrase: &str) -> bool {
+    let (phrase_text, prefix_mode) = if let Some(stem) = phrase.strip_suffix('*') {
+        (stem, true)
+    } else {
+        (phrase, false)
+    };
+    let normalized_transcript = normalize_for_hallucination_match(transcript);
+    let normalized_phrase = normalize_for_hallucination_match(phrase_text);
+    if normalized_phrase.is_empty() {
+        return false;
     }
-    let normalized = input.trim().to_ascii_lowercase();
+    if prefix_mode {
+        normalized_transcript.starts_with(&normalized_phrase)
+    } else {
+        normalized_transcript == normalized_phrase
+    }
+}
+
+/// Returns `None` when the transcript is rejected as a short hallucination.
+fn filter_hallucination(input: &str, config: &AsrConfig) -> Option<String> {
+    if !config.hallucination_filter.enabled || input.split_whitespace().count() > 5 {
+        return Some(input.to_owned());
+    }
     if config
         .hallucination_filter
         .phrases
         .iter()
-        .any(|phrase| normalized == phrase.trim().to_ascii_lowercase())
+        .any(|phrase| phrase_matches_hallucination(input, phrase))
     {
-        String::new()
+        None
     } else {
-        input.to_owned()
+        Some(input.to_owned())
+    }
+}
+
+fn apply_hallucination_filter(
+    text: &str,
+    segments: Vec<TranscriptSegment>,
+    config: &AsrConfig,
+) -> (String, Vec<TranscriptSegment>) {
+    match filter_hallucination(text, config) {
+        None => (String::new(), Vec::new()),
+        Some(text) => (text, segments),
     }
 }
 
@@ -480,10 +517,58 @@ mod tests {
     #[test]
     fn filters_only_short_exact_hallucinations() {
         let config = AsrConfig::default();
-        assert_eq!(filter_hallucination("Thank you.", &config), "");
+        assert_eq!(
+            filter_hallucination("Thank you.", &config),
+            None,
+            "punctuation-normalized thank-you phrase"
+        );
+        assert_eq!(
+            filter_hallucination("Subtitles by the Amara.org community", &config),
+            None,
+            "subtitle prefix phrase on short transcript"
+        );
         assert_eq!(
             filter_hallucination("Thank you. This is legitimate longer text", &config),
-            "Thank you. This is legitimate longer text"
+            Some("Thank you. This is legitimate longer text".into()),
+            "longer transcript is not filtered"
         );
+        assert_eq!(
+            filter_hallucination("Thank you for all your help", &config),
+            Some("Thank you for all your help".into()),
+            "six-word transcript starting with thank you is not filtered"
+        );
+        assert_eq!(
+            filter_hallucination("Thank you for the help", &config),
+            Some("Thank you for the help".into()),
+            "five-word thank-you dictation is not filtered"
+        );
+    }
+
+    #[test]
+    fn exact_phrases_do_not_prefix_match_longer_transcripts() {
+        let mut config = AsrConfig::default();
+        config.hallucination_filter.phrases = vec!["custom phrase".into()];
+        assert_eq!(
+            filter_hallucination("custom phrase and more", &config),
+            Some("custom phrase and more".into())
+        );
+        config.hallucination_filter.phrases = vec!["custom phrase*".into()];
+        assert_eq!(
+            filter_hallucination("custom phrase and more", &config),
+            None
+        );
+    }
+
+    #[test]
+    fn clears_segments_when_hallucination_filtered() {
+        let config = AsrConfig::default();
+        let segments = vec![TranscriptSegment {
+            start_ms: 0,
+            end_ms: 500,
+            text: "Thank you.".into(),
+        }];
+        let (text, segments) = apply_hallucination_filter("Thank you.", segments, &config);
+        assert!(text.is_empty());
+        assert!(segments.is_empty());
     }
 }

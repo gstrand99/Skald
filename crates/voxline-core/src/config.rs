@@ -420,9 +420,9 @@ impl Default for HallucinationFilterConfig {
             phrases: vec![
                 "thank you.".into(),
                 "thanks for watching.".into(),
-                "subtitles by".into(),
-                "subtitle by".into(),
-                "captioned by".into(),
+                "subtitles by*".into(),
+                "subtitle by*".into(),
+                "captioned by*".into(),
             ],
         }
     }
