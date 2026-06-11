@@ -26,7 +26,7 @@ fn set_secret(provider: &str) -> Result<()> {
     if provider != OPENROUTER_SECRET_NAME {
         bail!("unsupported secret provider: {provider}");
     }
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     let key = if io::stdin().is_terminal() {
         Password::new()
             .with_prompt("OpenRouter API key")

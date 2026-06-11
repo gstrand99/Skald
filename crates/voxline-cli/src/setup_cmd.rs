@@ -381,7 +381,7 @@ async fn record_fixture(seconds: u64, fixture: &Path, non_interactive: bool) -> 
     })
     .await?;
     if !response.ok {
-        print_response(&response);
+        print_response(&response)?;
         bail!("setup recording failed");
     }
     if let Some(recording) = &response.recording {
@@ -455,7 +455,7 @@ async fn benchmark_candidates(
     })
     .await?;
     if !response.ok {
-        print_response(&response);
+        print_response(&response)?;
         bail!("model comparison benchmark failed");
     }
     response

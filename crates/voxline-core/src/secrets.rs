@@ -33,7 +33,7 @@ pub enum SecretError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct SecretsConfig {
     pub mode: String,
     pub openrouter_env_var: String,
@@ -182,5 +182,11 @@ mod tests {
         let config = SecretsConfig::default();
         assert_eq!(config.openrouter_env_var, "OPENROUTER_API_KEY");
         assert!(!config.allow_insecure_file_fallback);
+    }
+
+    #[test]
+    fn rejects_unknown_secrets_config_keys() {
+        let err = toml::from_str::<SecretsConfig>("unknown_key = true").unwrap_err();
+        assert!(err.to_string().contains("unknown field"));
     }
 }

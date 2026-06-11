@@ -8,7 +8,7 @@ pub fn enable(provider: &str) -> Result<()> {
     if provider != "openrouter" {
         bail!("unsupported cleanup provider: {provider}");
     }
-    let mut config = Config::load_or_default()?;
+    let mut config = Config::load_validated()?;
     config.cleanup.enabled = true;
     config.cleanup.provider = "openrouter".into();
     if config.cleanup.model.trim().is_empty() {
@@ -25,7 +25,7 @@ pub fn enable(provider: &str) -> Result<()> {
 }
 
 pub fn disable() -> Result<()> {
-    let mut config = Config::load_or_default()?;
+    let mut config = Config::load_validated()?;
     config.cleanup.enabled = false;
     config.cleanup.provider = "none".into();
     let path = config.save()?;

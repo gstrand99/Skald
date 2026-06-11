@@ -756,7 +756,6 @@ pub fn environment_report() -> EnvironmentReport {
         "ydotool",
         "hyprctl",
         "swaymsg",
-        "wmctrl",
         "notify-send",
         "wl-copy",
         "wl-paste",
