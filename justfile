@@ -115,7 +115,7 @@ play wav:
 
 # Transcribe a 16 kHz mono WAV through the running daemon.
 transcribe wav: build
-    target/debug/voxline transcribe {{wav}} --no-cleanup
+    target/debug/voxline transcribe {{wav}}
 
 # Load the configured ASR model.
 asr-load: build
