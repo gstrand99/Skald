@@ -84,11 +84,11 @@ pub fn passthrough_outcome(text: impl Into<String>) -> CleanupOutcome {
     }
 }
 
-pub fn failed_fallback_outcome(raw: impl Into<String>) -> CleanupOutcome {
+pub fn failed_fallback_outcome(raw: impl Into<String>, cleanup_ms: u64) -> CleanupOutcome {
     CleanupOutcome {
         text: raw.into(),
         used: true,
         failed: true,
-        cleanup_ms: 0,
+        cleanup_ms,
     }
 }

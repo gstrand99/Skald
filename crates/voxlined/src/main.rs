@@ -22,7 +22,7 @@ use tokio::{
     signal,
     sync::{Mutex, RwLock, broadcast},
 };
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use tracing_subscriber::EnvFilter;
 use voxline_core::{
     cleanup::{CleanupOverride, should_run_cleanup_with_voice_style},
@@ -45,6 +45,16 @@ struct Args {
     foreground: bool,
 }
 
+#[derive(Clone)]
+struct JobConfigSnapshot {
+    cleanup: CleanupConfig,
+    paths: PathsConfig,
+    secrets: SecretsConfig,
+    cleanup_enabled: bool,
+    voice_commands: VoiceCommandsConfig,
+    preview_ring_buffer_seconds: u64,
+}
+
 struct AppState {
     status: RwLock<DaemonStatus>,
     events: broadcast::Sender<Event>,
@@ -60,6 +70,7 @@ struct AppState {
     cleanup_override: Mutex<Option<CleanupOverride>>,
     style_override: Mutex<Option<String>>,
     active_app_profile: Mutex<Option<voxline_core::apps::AppProfile>>,
+    job_config: Mutex<Option<JobConfigSnapshot>>,
 }
 
 #[tokio::main]
@@ -112,6 +123,7 @@ async fn main() -> Result<()> {
         cleanup_override: Mutex::new(None),
         style_override: Mutex::new(None),
         active_app_profile: Mutex::new(None),
+        job_config: Mutex::new(None),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -119,6 +131,9 @@ async fn main() -> Result<()> {
         tokio::select! {
             incoming = listener.accept() => {
                 let (stream, _) = incoming?;
+                if reject_foreign_peer(&stream) {
+                    continue;
+                }
                 let state = Arc::clone(&state);
                 tokio::spawn(async move {
                     if let Err(error) = handle_client(stream, state).await {
@@ -143,6 +158,78 @@ fn remove_stale_socket(path: &Path) -> Result<()> {
             .with_context(|| format!("failed to remove stale socket {}", path.display()))?;
     }
     Ok(())
+}
+
+fn reject_foreign_peer(stream: &UnixStream) -> bool {
+    let Ok(cred) = stream.peer_cred() else {
+        warn!("rejected unix connection: peer credentials unavailable");
+        return true;
+    };
+    let peer_uid = cred.uid();
+    let daemon_uid = rustix::process::geteuid().as_raw();
+    if peer_uid != daemon_uid {
+        warn!(
+            peer_uid,
+            daemon_uid, "rejected unix connection from different user"
+        );
+        return true;
+    }
+    false
+}
+
+fn snapshot_job_config(config: &Config) -> JobConfigSnapshot {
+    JobConfigSnapshot {
+        cleanup: config.cleanup.clone(),
+        paths: config.paths.clone(),
+        secrets: config.secrets.clone(),
+        cleanup_enabled: config.cleanup.enabled,
+        voice_commands: config.voice_commands.clone(),
+        preview_ring_buffer_seconds: config.preview.ring_buffer_seconds,
+    }
+}
+
+fn load_job_config_snapshot() -> JobConfigSnapshot {
+    Config::load_or_default().map_or_else(
+        |_| JobConfigSnapshot {
+            cleanup: CleanupConfig::default(),
+            paths: PathsConfig::default(),
+            secrets: SecretsConfig::default(),
+            cleanup_enabled: false,
+            voice_commands: VoiceCommandsConfig::default(),
+            preview_ring_buffer_seconds: 30,
+        },
+        |config| snapshot_job_config(&config),
+    )
+}
+
+async fn try_begin_job(
+    state: &AppState,
+    job_id: Option<JobId>,
+    new_state: JobState,
+) -> Result<DaemonStatus, ()> {
+    let mut status = state.status.write().await;
+    if status.job_state != JobState::Idle {
+        return Err(());
+    }
+    status.active_job_id.clone_from(&job_id);
+    status.job_state.clone_from(&new_state);
+    let snapshot = status.clone();
+    let _ = state.events.send(Event::State {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        job_id,
+        job_state: new_state,
+        final_model_state: snapshot.final_model_state.clone(),
+    });
+    Ok(snapshot)
+}
+
+async fn clear_per_job_context(state: &AppState) {
+    *state.cleanup_override.lock().await = None;
+    *state.style_override.lock().await = None;
+    *state.target_at_start.lock().await = None;
+    *state.active_app_profile.lock().await = None;
+    *state.job_config.lock().await = None;
 }
 
 async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
@@ -386,25 +473,13 @@ fn reload_job_config() -> (
     bool,
     VoiceCommandsConfig,
 ) {
-    Config::load_or_default().map_or_else(
-        |_| {
-            (
-                CleanupConfig::default(),
-                PathsConfig::default(),
-                SecretsConfig::default(),
-                false,
-                VoiceCommandsConfig::default(),
-            )
-        },
-        |config| {
-            (
-                config.cleanup.clone(),
-                config.paths.clone(),
-                config.secrets.clone(),
-                config.cleanup.enabled,
-                config.voice_commands.clone(),
-            )
-        },
+    let snapshot = load_job_config_snapshot();
+    (
+        snapshot.cleanup,
+        snapshot.paths,
+        snapshot.secrets,
+        snapshot.cleanup_enabled,
+        snapshot.voice_commands,
     )
 }
 
@@ -415,10 +490,14 @@ async fn bench_dictation(
     cleanup: Option<voxline_core::cleanup::CleanupOverride>,
     attempt_paste: bool,
 ) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    if try_begin_job(state, None, JobState::Transcribing)
+        .await
+        .is_err()
+    {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     let config = Config::load_or_default().unwrap_or_default();
+    *state.job_config.lock().await = Some(snapshot_job_config(&config));
     let recording = match audio::recording_from_existing_wav(
         &audio_path,
         &config.audio.gates,
@@ -426,11 +505,13 @@ async fn bench_dictation(
     ) {
         Ok(recording) => recording,
         Err(error) => {
+            clear_per_job_context(state).await;
+            let status = update_state(state, None, JobState::Idle).await;
             return error_response(
                 request_id,
                 "bench_audio_invalid",
                 &error.to_string(),
-                Some(state.status.read().await.clone()),
+                Some(status),
             );
         }
     };
@@ -460,15 +541,16 @@ async fn setup_record(
     seconds: u64,
     output_path: std::path::PathBuf,
 ) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    let job_id = JobId::new();
+    if try_begin_job(state, Some(job_id.clone()), JobState::Recording)
+        .await
+        .is_err()
+    {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
-    let job_id = JobId::new();
     if let Err(error) = state.audio.start(job_id.clone(), None).await {
         return audio_error_response(request_id, state, error).await;
     }
-    let status = update_state(state, Some(job_id.clone()), JobState::Recording).await;
-    let _ = status;
     tokio::time::sleep(Duration::from_secs(seconds.max(1))).await;
     state.preview.stop().await;
     let recording = match state.audio.stop(job_id).await {
@@ -518,15 +600,19 @@ async fn bench_model_compare(
     candidates: Vec<AsrBenchCandidate>,
     include_cold_load: bool,
 ) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    if try_begin_job(state, None, JobState::Transcribing)
+        .await
+        .is_err()
+    {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     if candidates.is_empty() {
+        let status = update_state(state, None, JobState::Idle).await;
         return error_response(
             request_id,
             "bench_no_candidates",
             "no models were provided for comparison",
-            Some(state.status.read().await.clone()),
+            Some(status),
         );
     }
     let base_config = Config::load_or_default().unwrap_or_default().asr;
@@ -538,6 +624,7 @@ async fn bench_model_compare(
         asr_config.lifecycle.mode = "on_demand".into();
         asr_config.lifecycle.idle_unload_seconds = 0;
 
+        // `cold_load_ms` is only populated after an explicit unload+reload; otherwise 0.
         let cold_load_ms = if include_cold_load {
             let _ = state.asr.unload().await;
             match state.asr.reload(asr_config.clone()).await {
@@ -555,20 +642,18 @@ async fn bench_model_compare(
                 }
             }
         } else {
-            match state.asr.reload(asr_config.clone()).await {
-                Ok(ms) => ms,
-                Err(error) => {
-                    results.push(ModelBenchResult {
-                        model_id: candidate.model_id.clone(),
-                        cold_load_ms: 0,
-                        warm_transcribe_ms: 0,
-                        audio_duration_ms: 0,
-                        transcript_text: String::new(),
-                        error: Some(error.to_string()),
-                    });
-                    continue;
-                }
+            if let Err(error) = state.asr.reload(asr_config.clone()).await {
+                results.push(ModelBenchResult {
+                    model_id: candidate.model_id.clone(),
+                    cold_load_ms: 0,
+                    warm_transcribe_ms: 0,
+                    audio_duration_ms: 0,
+                    transcript_text: String::new(),
+                    error: Some(error.to_string()),
+                });
+                continue;
             }
+            0
         };
 
         match state.asr.transcribe(audio_path.clone()).await {
@@ -596,7 +681,7 @@ async fn bench_model_compare(
         let _ = state.asr.unload().await;
     }
     let _ = state.asr.reload(base_config).await;
-    let status = state.status.read().await.clone();
+    let status = update_state(state, None, JobState::Idle).await;
     Response {
         protocol_version: PROTOCOL_VERSION,
         request_id,
@@ -619,11 +704,13 @@ async fn transcribe(
     state: &AppState,
     audio_path: std::path::PathBuf,
 ) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    if try_begin_job(state, None, JobState::Transcribing)
+        .await
+        .is_err()
+    {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     update_model_state(state, ModelState::Loading).await;
-    update_state(state, None, JobState::Transcribing).await;
     match state.asr.transcribe(audio_path).await {
         Ok((transcript, benchmark)) => {
             update_model_state(state, ModelState::Ready).await;
@@ -700,6 +787,8 @@ async fn asr_error_response(
         },
     )
     .await;
+    // `JobState::Failed` is reserved in the protocol but unused; pipeline errors reset to Idle.
+    clear_per_job_context(state).await;
     let status = update_state(state, None, JobState::Idle).await;
     emit_error(state, None, "asr_error", &message);
     error_response(request_id, "asr_error", &message, Some(status))
@@ -735,29 +824,32 @@ async fn start(
     cleanup: Option<CleanupOverride>,
     style: Option<String>,
 ) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    let job_id = JobId::new();
+    if try_begin_job(&state, Some(job_id.clone()), JobState::Recording)
+        .await
+        .is_err()
+    {
         return state_error(request_id, &state, "busy", "VoxLine is busy").await;
     }
-    let job_id = JobId::new();
+    let config = Config::load_or_default().unwrap_or_default();
+    let job_snapshot = snapshot_job_config(&config);
+    *state.job_config.lock().await = Some(job_snapshot.clone());
     *state.cleanup_override.lock().await = cleanup;
     let target_at_start = voxline_platform::capture_active_target();
-    let active_app_profile = Config::load_or_default().ok().and_then(|config| {
-        target_at_start.as_ref().and_then(|target| {
-            voxline_core::apps::match_app_profile(
-                &config.paths,
-                target.app_id.as_deref(),
-                target.title.as_deref(),
-            )
-        })
+    let active_app_profile = target_at_start.as_ref().and_then(|target| {
+        voxline_core::apps::match_app_profile(
+            &job_snapshot.paths,
+            target.app_id.as_deref(),
+            target.title.as_deref(),
+        )
     });
     *state.target_at_start.lock().await = target_at_start;
     *state.active_app_profile.lock().await = active_app_profile;
     *state.style_override.lock().await = style;
-    let preview_ring_buffer_seconds = state.preview.is_enabled().then(|| {
-        Config::load_or_default()
-            .map(|config| config.preview.ring_buffer_seconds)
-            .unwrap_or(30)
-    });
+    let preview_ring_buffer_seconds = state
+        .preview
+        .is_enabled()
+        .then_some(job_snapshot.preview_ring_buffer_seconds);
     match state
         .audio
         .start(job_id.clone(), preview_ring_buffer_seconds)
@@ -767,7 +859,6 @@ async fn start(
             if let (Some(tap), Some(preview_asr)) =
                 (state.audio.current_tap(), state.preview_asr.clone())
             {
-                let events = state.events.clone();
                 let state_for_preview = Arc::clone(&state);
                 state
                     .preview
@@ -775,7 +866,6 @@ async fn start(
                         job_id.clone(),
                         tap,
                         preview_asr,
-                        events,
                         Arc::new(move |model_state| {
                             let state = Arc::clone(&state_for_preview);
                             tokio::spawn(async move {
@@ -785,7 +875,7 @@ async fn start(
                     )
                     .await;
             }
-            let status = update_state(&state, Some(job_id), JobState::Recording).await;
+            let status = state.status.read().await.clone();
             ok_response(request_id, status)
         }
         Err(error) => audio_error_response(request_id, &state, error).await,
@@ -859,6 +949,7 @@ async fn finish_dictation(
         if state.notifications.enabled && state.audio_gates.notify_on_no_speech {
             voxline_platform::notify("VoxLine", "No speech detected");
         }
+        clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
         return error_response(
             request_id,
@@ -884,6 +975,7 @@ async fn finish_dictation(
         if state.notifications.enabled {
             voxline_platform::notify("VoxLine", "No speech recognized");
         }
+        clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
         return error_response(
             request_id,
@@ -896,8 +988,17 @@ async fn finish_dictation(
     let cleanup_override = state.cleanup_override.lock().await.take();
     let style_override = state.style_override.lock().await.take();
     let active_app_profile = state.active_app_profile.lock().await.take();
-    let (cleanup_config, paths_config, secrets_config, cleanup_enabled, voice_commands_config) =
-        reload_job_config();
+    let job_snapshot = state
+        .job_config
+        .lock()
+        .await
+        .take()
+        .unwrap_or_else(load_job_config_snapshot);
+    let cleanup_config = job_snapshot.cleanup;
+    let paths_config = job_snapshot.paths;
+    let secrets_config = job_snapshot.secrets;
+    let cleanup_enabled = job_snapshot.cleanup_enabled;
+    let voice_commands_config = job_snapshot.voice_commands;
     let prefer_clipboard_only = active_app_profile
         .as_ref()
         .and_then(|profile| profile.injection.prefer_clipboard_only)
@@ -946,6 +1047,7 @@ async fn finish_dictation(
         .await;
     }
     if raw_text.trim().is_empty() {
+        clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
         return error_response(
             request_id,
@@ -970,6 +1072,7 @@ async fn finish_dictation(
         voice_style_override.is_some(),
     ) {
         update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
+        let cleanup_started = Instant::now();
         match cleanup::run_cleanup(
             &cleanup_config,
             &paths_config,
@@ -984,7 +1087,7 @@ async fn finish_dictation(
             Err(error) => {
                 warn!(%error, "cleanup failed; falling back to raw transcript");
                 if cleanup_config.fallback_to_raw_on_error {
-                    cleanup::failed_fallback_outcome(raw_text)
+                    cleanup::failed_fallback_outcome(raw_text, elapsed_ms(cleanup_started))
                 } else {
                     let status = update_state(state, None, JobState::Idle).await;
                     return error_response(
@@ -1580,11 +1683,14 @@ async fn deliver_snippet_from_job(
 }
 
 async fn insert_snippet(request_id: String, state: &AppState, name: String) -> Response {
-    if state.status.read().await.job_state != JobState::Idle {
+    let job_id = JobId::new();
+    if try_begin_job(state, Some(job_id.clone()), JobState::Copying)
+        .await
+        .is_err()
+    {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     let started = Instant::now();
-    let job_id = JobId::new();
     let target_at_insert = voxline_platform::capture_active_target();
     *state.target_at_start.lock().await = target_at_insert.clone();
     let paths_config = Config::load_or_default()
@@ -1595,7 +1701,14 @@ async fn insert_snippet(request_id: String, state: &AppState, name: String) -> R
     let content = match voxline_core::snippets::load_snippet_content(&paths_config, &name) {
         Ok(content) => content,
         Err(error) => {
-            return state_error(request_id, state, "snippet_error", &error.to_string()).await;
+            clear_per_job_context(state).await;
+            let status = update_state(state, None, JobState::Idle).await;
+            return error_response(
+                request_id,
+                "snippet_error",
+                &error.to_string(),
+                Some(status),
+            );
         }
     };
     let delivery = match deliver_text_to_target(
@@ -1941,20 +2054,33 @@ impl Drop for TemporaryAudio {
 async fn cancel(request_id: String, state: &AppState) -> Response {
     let job_id = {
         let status = state.status.read().await;
-        if status.job_state != JobState::Recording {
-            drop(status);
-            return state_error(
-                request_id,
-                state,
-                "no_active_recording",
-                "there is no active recording",
-            )
-            .await;
+        match &status.job_state {
+            JobState::Recording => status
+                .active_job_id
+                .clone()
+                .expect("recording has a job id"),
+            JobState::Idle => {
+                drop(status);
+                return state_error(
+                    request_id,
+                    state,
+                    "no_active_recording",
+                    "there is no active recording",
+                )
+                .await;
+            }
+            job_state => {
+                let job_state = job_state.clone();
+                drop(status);
+                return state_error(
+                    request_id,
+                    state,
+                    "cannot_cancel",
+                    &format!("cannot cancel while job is {job_state:?}"),
+                )
+                .await;
+            }
         }
-        status
-            .active_job_id
-            .clone()
-            .expect("recording has a job id")
     };
     state.preview.stop().await;
     if state.preview.is_enabled() {
@@ -1962,8 +2088,7 @@ async fn cancel(request_id: String, state: &AppState) -> Response {
     }
     match state.audio.cancel(job_id.clone()).await {
         Ok(()) => {
-            *state.target_at_start.lock().await = None;
-            *state.cleanup_override.lock().await = None;
+            clear_per_job_context(state).await;
             update_state(state, Some(job_id), JobState::Cancelled).await;
             let status = update_state(state, None, JobState::Idle).await;
             ok_response(request_id, status)
@@ -2006,6 +2131,8 @@ async fn audio_error_response(
         voxline_platform::notify("VoxLine", "Recording failed: audio stream error");
     }
     emit_error(state, None, "audio_error", &error.to_string());
+    // `JobState::Failed` is reserved in the protocol but unused; pipeline errors reset to Idle.
+    clear_per_job_context(state).await;
     let status = update_state(state, None, JobState::Idle).await;
     error_response(request_id, "audio_error", &error.to_string(), Some(status))
 }
@@ -2055,8 +2182,8 @@ async fn stream_subscribe(
                         write_json_line(writer, &event).await?;
                     }
                     Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        anyhow::bail!("event subscriber is too slow");
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        debug!(skipped, "event subscriber lagged; skipping ahead");
                     }
                     Err(broadcast::error::RecvError::Closed) => return Ok(()),
                 },
@@ -2117,7 +2244,6 @@ fn event_matches(event: &Event, kinds: &[EventKind]) -> bool {
             (EventKind::State, Event::State { .. })
                 | (EventKind::Result, Event::Result { .. })
                 | (EventKind::Error, Event::Error { .. })
-                | (EventKind::Preview, Event::Preview { .. })
         )
     })
 }
@@ -2133,8 +2259,8 @@ async fn stream_events(
                 write_json_line(writer, &event).await?;
             }
             Ok(_) => {}
-            Err(broadcast::error::RecvError::Lagged(_)) => {
-                anyhow::bail!("event subscriber is too slow");
+            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                debug!(skipped, "event subscriber lagged; skipping ahead");
             }
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
@@ -2160,4 +2286,43 @@ fn now_ms() -> u64 {
 
 fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use voxline_core::config::{AsrConfig, AudioConfig, PreviewConfig, VocabularyConfig};
+
+    fn test_app_state() -> Arc<AppState> {
+        let (events, _) = broadcast::channel(32);
+        Arc::new(AppState {
+            status: RwLock::new(DaemonStatus::default()),
+            events,
+            preview: preview::PreviewCoordinator::new(PreviewConfig::default()),
+            preview_asr: None,
+            audio: audio::AudioRecorder::spawn(AudioConfig::default(), PathsConfig::default()),
+            asr: asr::AsrManager::spawn(AsrConfig::default(), VocabularyConfig::default()),
+            audio_gates: AudioGatesConfig::default(),
+            injection: InjectionConfig::default(),
+            notifications: NotificationsConfig::default(),
+            privacy: PrivacyConfig::default(),
+            target_at_start: Mutex::new(None),
+            cleanup_override: Mutex::new(None),
+            style_override: Mutex::new(None),
+            active_app_profile: Mutex::new(None),
+            job_config: Mutex::new(None),
+        })
+    }
+
+    #[tokio::test]
+    async fn try_begin_job_race_exactly_one_wins() {
+        let state = test_app_state();
+        let (first, second) = tokio::join!(
+            try_begin_job(&state, Some(JobId::new()), JobState::Recording),
+            try_begin_job(&state, Some(JobId::new()), JobState::Recording),
+        );
+        let winners = usize::from(first.is_ok()) + usize::from(second.is_ok());
+        assert_eq!(winners, 1);
+        assert_eq!(state.status.read().await.job_state, JobState::Recording);
+    }
 }
