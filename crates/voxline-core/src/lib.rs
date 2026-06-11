@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod commands;
 pub mod config;
 pub mod paths;
+pub mod preview;
 pub mod protocol;
 pub mod routing;
 pub mod runtime;

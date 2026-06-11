@@ -137,6 +137,18 @@ GNOME Wayland defaults to clipboard-only.
 
 **`[privacy]`** — Off by default. Enabling storage or transcript logging is explicit.
 
+**`[preview]`** — Opt-in realtime transcription while recording. Preview uses a
+separate small model (default `ggml-small.en.bin` on CPU) while final transcription
+keeps `[asr]`. Preview text is shown in `voxline watch` only; it is never copied or
+pasted.
+
+```bash
+# download ggml-small.en.bin to ~/.local/share/voxline/models/
+# set preview.enabled = true in config.toml
+voxline watch
+voxline toggle
+```
+
 ### Secrets and cleanup
 
 ```bash
