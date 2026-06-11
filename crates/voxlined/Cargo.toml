@@ -12,6 +12,7 @@ asr-whisper-rs-cuda = ["whisper-rs/cuda"]
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+# Workspace reqwest lacks the `json` feature required by openrouter.rs.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 cpal.workspace = true
 dirs.workspace = true
