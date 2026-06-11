@@ -30,6 +30,7 @@ pub enum AsrError {
     WorkerStopped,
 }
 
+#[derive(Clone)]
 pub struct AsrManager {
     commands: mpsc::Sender<Command>,
 }
@@ -43,11 +44,120 @@ enum Command {
     },
 }
 
-struct Worker {
+pub(crate) struct WhisperEngine {
     config: AsrConfig,
-    vocabulary: VocabularyConfig,
     context: Option<WhisperContext>,
     last_used: Option<Instant>,
+}
+
+impl WhisperEngine {
+    pub fn new(config: AsrConfig) -> Self {
+        Self {
+            config,
+            context: None,
+            last_used: None,
+        }
+    }
+
+    pub fn unload(&mut self) {
+        self.context = None;
+        self.last_used = None;
+    }
+
+    pub fn idle_timeout(&self) -> Option<Duration> {
+        if self.config.lifecycle.mode != "keep_warm"
+            || self.context.is_none()
+            || self.config.lifecycle.idle_unload_seconds == 0
+        {
+            return None;
+        }
+        let idle = self.last_used?.elapsed();
+        Some(Duration::from_secs(self.config.lifecycle.idle_unload_seconds).saturating_sub(idle))
+    }
+
+    pub fn load(&mut self) -> Result<u64, AsrError> {
+        if self.context.is_some() {
+            return Ok(0);
+        }
+        let path = voxline_core::paths::expand_home(&self.config.model_path);
+        if !path.is_file() {
+            return Err(AsrError::ModelNotFound { path });
+        }
+        if self.config.gpu && !cfg!(feature = "asr-whisper-rs-cuda") {
+            return Err(AsrError::UnsupportedFeature {
+                feature: "CUDA support was not enabled at build time".into(),
+            });
+        }
+        let started = Instant::now();
+        let mut parameters = WhisperContextParameters::default();
+        parameters.use_gpu(self.config.gpu);
+        let context = WhisperContext::new_with_params(
+            path.to_str().ok_or_else(|| AsrError::ModelLoadFailed {
+                message: "model path is not valid UTF-8".into(),
+            })?,
+            parameters,
+        )
+        .map_err(|error| AsrError::ModelLoadFailed {
+            message: error.to_string(),
+        })?;
+        self.context = Some(context);
+        self.last_used = Some(Instant::now());
+        Ok(elapsed_ms(started))
+    }
+
+    pub fn transcribe_preview_samples(&mut self, audio: &[f32]) -> Result<String, AsrError> {
+        if audio.is_empty() {
+            return Ok(String::new());
+        }
+        let _model_load_ms = self.load()?;
+        let mut state = self
+            .context
+            .as_ref()
+            .expect("model loaded")
+            .create_state()
+            .map_err(|error| AsrError::TranscriptionFailed {
+                message: error.to_string(),
+            })?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_n_threads(i32::from(self.config.threads));
+        params.set_language(Some(&self.config.language));
+        params.set_translate(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_special(false);
+        params.set_print_timestamps(false);
+        params.set_single_segment(true);
+        params.set_no_context(true);
+        params.set_suppress_blank(true);
+        params.set_no_speech_thold(0.5);
+        state
+            .full(params, audio)
+            .map_err(|error| AsrError::TranscriptionFailed {
+                message: error.to_string(),
+            })?;
+        self.last_used = Some(Instant::now());
+        let mut segments = Vec::new();
+        for segment in state.as_iter() {
+            let text = segment
+                .to_str_lossy()
+                .map_err(|error| AsrError::TranscriptionFailed {
+                    message: error.to_string(),
+                })?
+                .trim()
+                .to_owned();
+            if !text.is_empty() {
+                segments.push(text);
+            }
+        }
+        Ok(voxline_core::preview::sanitize_preview_hypothesis(
+            &segments.join(" "),
+        ))
+    }
+}
+
+struct Worker {
+    engine: WhisperEngine,
+    vocabulary: VocabularyConfig,
 }
 
 impl AsrManager {
@@ -58,12 +168,10 @@ impl AsrManager {
             .name("voxline-asr-worker".into())
             .spawn(move || {
                 let mut worker = Worker {
-                    config,
+                    engine: WhisperEngine::new(config),
                     vocabulary,
-                    context: None,
-                    last_used: None,
                 };
-                if warm && let Err(error) = worker.load() {
+                if warm && let Err(error) = worker.engine.load() {
                     tracing::warn!(%error, "ASR warm load failed");
                 }
                 worker.run(receiver);
@@ -101,13 +209,12 @@ impl Worker {
     #[allow(clippy::needless_pass_by_value)]
     fn run(&mut self, receiver: mpsc::Receiver<Command>) {
         loop {
-            let timeout = self.idle_timeout();
+            let timeout = self.engine.idle_timeout();
             let command = match timeout {
                 Some(timeout) => match receiver.recv_timeout(timeout) {
                     Ok(command) => command,
                     Err(mpsc::RecvTimeoutError::Timeout) => {
-                        self.context = None;
-                        self.last_used = None;
+                        self.engine.unload();
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => return,
@@ -119,11 +226,10 @@ impl Worker {
             };
             match command {
                 Command::Load(reply) => {
-                    let _ = reply.send(self.load());
+                    let _ = reply.send(self.engine.load());
                 }
                 Command::Unload(reply) => {
-                    self.context = None;
-                    self.last_used = None;
+                    self.engine.unload();
                     let _ = reply.send(Ok(()));
                 }
                 Command::Transcribe { path, reply } => {
@@ -133,51 +239,11 @@ impl Worker {
         }
     }
 
-    fn idle_timeout(&self) -> Option<Duration> {
-        if self.config.lifecycle.mode != "keep_warm"
-            || self.context.is_none()
-            || self.config.lifecycle.idle_unload_seconds == 0
-        {
-            return None;
-        }
-        let idle = self.last_used?.elapsed();
-        Some(Duration::from_secs(self.config.lifecycle.idle_unload_seconds).saturating_sub(idle))
-    }
-
-    fn load(&mut self) -> Result<u64, AsrError> {
-        if self.context.is_some() {
-            return Ok(0);
-        }
-        let path = voxline_core::paths::expand_home(&self.config.model_path);
-        if !path.is_file() {
-            return Err(AsrError::ModelNotFound { path });
-        }
-        if self.config.gpu && !cfg!(feature = "asr-whisper-rs-cuda") {
-            return Err(AsrError::UnsupportedFeature {
-                feature: "CUDA support was not enabled at build time".into(),
-            });
-        }
-        let started = Instant::now();
-        let mut parameters = WhisperContextParameters::default();
-        parameters.use_gpu(self.config.gpu);
-        let context = WhisperContext::new_with_params(
-            path.to_str().ok_or_else(|| AsrError::ModelLoadFailed {
-                message: "model path is not valid UTF-8".into(),
-            })?,
-            parameters,
-        )
-        .map_err(|error| AsrError::ModelLoadFailed {
-            message: error.to_string(),
-        })?;
-        self.context = Some(context);
-        self.last_used = Some(Instant::now());
-        Ok(elapsed_ms(started))
-    }
-
     fn transcribe(&mut self, path: &Path) -> Result<(Transcript, AsrBenchmark), AsrError> {
-        let model_load_ms = self.load()?;
+        let model_load_ms = self.engine.load()?;
         let (audio, duration_ms) = read_wav(path)?;
         let mut state = self
+            .engine
             .context
             .as_ref()
             .expect("model loaded")
@@ -186,8 +252,8 @@ impl Worker {
                 message: error.to_string(),
             })?;
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-        params.set_n_threads(i32::from(self.config.threads));
-        params.set_language(Some(&self.config.language));
+        params.set_n_threads(i32::from(self.engine.config.threads));
+        params.set_language(Some(&self.engine.config.language));
         params.set_translate(false);
         params.set_print_progress(false);
         params.set_print_realtime(false);
@@ -204,7 +270,7 @@ impl Worker {
                 message: error.to_string(),
             })?;
         let transcribe_ms = elapsed_ms(started);
-        self.last_used = Some(Instant::now());
+        self.engine.last_used = Some(Instant::now());
         let mut segments = Vec::new();
         for segment in state.as_iter() {
             let text = segment
@@ -229,16 +295,16 @@ impl Worker {
             .join(" ");
         let text = filter_hallucination(
             &apply_replacements(raw.trim(), &self.vocabulary),
-            &self.config,
+            &self.engine.config,
         );
         let transcript = Transcript {
             text,
-            language: Some(self.config.language.clone()),
+            language: Some(self.engine.config.language.clone()),
             duration_ms: Some(duration_ms),
             segments,
         };
-        if self.config.lifecycle.mode == "on_demand" {
-            self.context = None;
+        if self.engine.config.lifecycle.mode == "on_demand" {
+            self.engine.unload();
         }
         Ok((
             transcript,

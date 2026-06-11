@@ -3,6 +3,8 @@ mod audio;
 mod cleanup;
 mod injection;
 mod openrouter;
+mod preview;
+mod preview_asr;
 mod template_extract;
 
 use std::{
@@ -29,8 +31,8 @@ use voxline_core::{
         NotificationsConfig, PathsConfig, PrivacyConfig, SecretsConfig, VoiceCommandsConfig,
     },
     protocol::{
-        AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
-        JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response,
+        AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, EventKind,
+        JobId, JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response,
         SessionEnvironment, Transcript,
     },
     runtime::{ensure_runtime_dir_for, socket_path_for},
@@ -46,6 +48,8 @@ struct Args {
 struct AppState {
     status: RwLock<DaemonStatus>,
     events: broadcast::Sender<Event>,
+    preview: preview::PreviewCoordinator,
+    preview_asr: Option<preview_asr::PreviewAsrManager>,
     audio: audio::AudioRecorder,
     asr: asr::AsrManager,
     audio_gates: AudioGatesConfig,
@@ -83,14 +87,20 @@ async fn main() -> Result<()> {
         (AutoPasteMode::Safe, true) => "safe",
         (AutoPasteMode::Always, true) => "always",
     };
+    let preview_enabled = config.preview.enabled;
+    let preview_asr = preview_enabled
+        .then(|| preview_asr::PreviewAsrManager::spawn(&config.preview, &config.asr));
     let state = Arc::new(AppState {
         status: RwLock::new(DaemonStatus {
             cleanup_enabled: config.cleanup.enabled,
             asr_gpu_build: cfg!(feature = "asr-whisper-rs-cuda"),
             auto_paste_effective: auto_paste_effective.into(),
+            preview_model_state: preview_enabled.then_some(ModelState::Unloaded),
             ..DaemonStatus::default()
         }),
         events,
+        preview: preview::PreviewCoordinator::new(config.preview.clone()),
+        preview_asr,
         audio: audio::AudioRecorder::spawn(config.audio, config.paths.clone()),
         asr: asr::AsrManager::spawn(config.asr, config.vocabulary),
         audio_gates,
@@ -171,19 +181,19 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
             write_json_line(&mut writer, &response).await?;
             continue;
         }
-        if let Command::Subscribe { .. } = request.command {
+        if let Command::Subscribe { events } = request.command {
             let response = ok_response(request.request_id, state.status.read().await.clone());
             write_json_line(&mut writer, &response).await?;
-            stream_events(&mut writer, state.events.subscribe()).await?;
+            stream_subscribe(&mut writer, &state, events).await?;
             return Ok(());
         }
-        let response = dispatch(request, &state).await;
+        let response = dispatch(request, Arc::clone(&state)).await;
         write_json_line(&mut writer, &response).await?;
     }
     Ok(())
 }
 
-async fn dispatch(request: Request, state: &AppState) -> Response {
+async fn dispatch(request: Request, state: Arc<AppState>) -> Response {
     match request.command {
         Command::Status | Command::AsrStatus => {
             ok_response(request.request_id, state.status.read().await.clone())
@@ -192,25 +202,34 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
             cleanup,
             style,
             snippet,
-        } => toggle(request.request_id, state, cleanup, style, snippet).await,
-        Command::InsertSnippet { name } => insert_snippet(request.request_id, state, name).await,
+        } => {
+            toggle(
+                request.request_id,
+                Arc::clone(&state),
+                cleanup,
+                style,
+                snippet,
+            )
+            .await
+        }
+        Command::InsertSnippet { name } => insert_snippet(request.request_id, &state, name).await,
         Command::TemplatePreview { name, text } => {
-            template_preview(request.request_id, state, name, text).await
+            template_preview(request.request_id, &state, name, text).await
         }
         Command::Start => start(request.request_id, state, None, None).await,
-        Command::Stop => stop(request.request_id, state).await,
-        Command::Cancel => cancel(request.request_id, state).await,
+        Command::Stop => stop(request.request_id, &state).await,
+        Command::Cancel => cancel(request.request_id, &state).await,
         Command::Transcribe { audio_path } => {
-            transcribe(request.request_id, state, audio_path).await
+            transcribe(request.request_id, &state, audio_path).await
         }
-        Command::AsrLoad => asr_load(request.request_id, state).await,
-        Command::AsrUnload => asr_unload(request.request_id, state).await,
-        Command::AsrRestart => asr_restart(request.request_id, state).await,
-        Command::TestClipboard => test_clipboard(request.request_id, state).await,
-        Command::TestPaste => test_paste(request.request_id, state).await,
-        Command::TestOpenrouter => test_openrouter(request.request_id, state).await,
+        Command::AsrLoad => asr_load(request.request_id, &state).await,
+        Command::AsrUnload => asr_unload(request.request_id, &state).await,
+        Command::AsrRestart => asr_restart(request.request_id, &state).await,
+        Command::TestClipboard => test_clipboard(request.request_id, &state).await,
+        Command::TestPaste => test_paste(request.request_id, &state).await,
+        Command::TestOpenrouter => test_openrouter(request.request_id, &state).await,
         Command::CleanupPreview { text, style } => {
-            cleanup_preview(request.request_id, state, text, style).await
+            cleanup_preview(request.request_id, &state, text, style).await
         }
         Command::DaemonEnvironment => {
             daemon_environment_response(request.request_id, state.status.read().await.clone())
@@ -427,7 +446,7 @@ async fn asr_error_response(
 
 async fn toggle(
     request_id: String,
-    state: &AppState,
+    state: Arc<AppState>,
     cleanup: Option<CleanupOverride>,
     style: Option<String>,
     snippet: Option<String>,
@@ -440,23 +459,23 @@ async fn toggle(
                 .map(str::trim)
                 .filter(|name| !name.is_empty())
             {
-                return insert_snippet(request_id, state, name.into()).await;
+                return insert_snippet(request_id, &state, name.into()).await;
             }
             start(request_id, state, cleanup, style).await
         }
-        JobState::Recording => stop(request_id, state).await,
-        _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
+        JobState::Recording => stop(request_id, &state).await,
+        _ => state_error(request_id, &state, "busy", "VoxLine is busy").await,
     }
 }
 
 async fn start(
     request_id: String,
-    state: &AppState,
+    state: Arc<AppState>,
     cleanup: Option<CleanupOverride>,
     style: Option<String>,
 ) -> Response {
     if state.status.read().await.job_state != JobState::Idle {
-        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+        return state_error(request_id, &state, "busy", "VoxLine is busy").await;
     }
     let job_id = JobId::new();
     *state.cleanup_override.lock().await = cleanup;
@@ -473,12 +492,42 @@ async fn start(
     *state.target_at_start.lock().await = target_at_start;
     *state.active_app_profile.lock().await = active_app_profile;
     *state.style_override.lock().await = style;
-    match state.audio.start(job_id.clone()).await {
+    let preview_ring_buffer_seconds = state.preview.is_enabled().then(|| {
+        Config::load_or_default()
+            .map(|config| config.preview.ring_buffer_seconds)
+            .unwrap_or(30)
+    });
+    match state
+        .audio
+        .start(job_id.clone(), preview_ring_buffer_seconds)
+        .await
+    {
         Ok(()) => {
-            let status = update_state(state, Some(job_id), JobState::Recording).await;
+            if let (Some(tap), Some(preview_asr)) =
+                (state.audio.current_tap(), state.preview_asr.clone())
+            {
+                let events = state.events.clone();
+                let state_for_preview = Arc::clone(&state);
+                state
+                    .preview
+                    .start(
+                        job_id.clone(),
+                        tap,
+                        preview_asr,
+                        events,
+                        Arc::new(move |model_state| {
+                            let state = Arc::clone(&state_for_preview);
+                            tokio::spawn(async move {
+                                update_preview_model_state(&state, model_state).await;
+                            });
+                        }),
+                    )
+                    .await;
+            }
+            let status = update_state(&state, Some(job_id), JobState::Recording).await;
             ok_response(request_id, status)
         }
-        Err(error) => audio_error_response(request_id, state, error).await,
+        Err(error) => audio_error_response(request_id, &state, error).await,
     }
 }
 
@@ -502,6 +551,10 @@ async fn stop(request_id: String, state: &AppState) -> Response {
             .clone()
             .expect("recording has a job id")
     };
+    state.preview.stop().await;
+    if state.preview.is_enabled() {
+        update_preview_model_state(state, ModelState::Unloaded).await;
+    }
     update_state(state, Some(job_id.clone()), JobState::Stopping).await;
     match state.audio.stop(job_id).await {
         Ok(recording) => {
@@ -1579,6 +1632,10 @@ async fn cancel(request_id: String, state: &AppState) -> Response {
             .clone()
             .expect("recording has a job id")
     };
+    state.preview.stop().await;
+    if state.preview.is_enabled() {
+        update_preview_model_state(state, ModelState::Unloaded).await;
+    }
     match state.audio.cancel(job_id.clone()).await {
         Ok(()) => {
             *state.target_at_start.lock().await = None;
@@ -1648,19 +1705,121 @@ async fn write_json_line<T: serde::Serialize>(
     Ok(())
 }
 
+async fn stream_subscribe(
+    writer: &mut tokio::net::unix::OwnedWriteHalf,
+    state: &AppState,
+    kinds: Vec<EventKind>,
+) -> Result<()> {
+    let want_preview = kinds.contains(&EventKind::Preview);
+    let want_other = kinds.iter().any(|kind| *kind != EventKind::Preview);
+    if !want_preview {
+        return stream_events(writer, state.events.subscribe(), &kinds).await;
+    }
+
+    let mut events_rx = state.events.subscribe();
+    let mut preview_rx = state.preview.subscribe();
+    let _ = preview_rx.borrow_and_update();
+
+    loop {
+        if want_other && want_preview {
+            tokio::select! {
+                event = events_rx.recv() => match event {
+                    Ok(event) if event_matches(&event, &kinds) => {
+                        write_json_line(writer, &event).await?;
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        anyhow::bail!("event subscriber is too slow");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
+                },
+                changed = preview_rx.changed() => {
+                    if changed.is_err() {
+                        return Ok(());
+                    }
+                    let snapshot = {
+                        let guard = preview_rx.borrow();
+                        guard.clone()
+                    };
+                    if let Some(snapshot) = snapshot {
+                        write_json_line(
+                            writer,
+                            &Event::Preview {
+                                protocol_version: PROTOCOL_VERSION,
+                                timestamp_ms: now_ms(),
+                                job_id: snapshot.job_id,
+                                stable: snapshot.stable,
+                                provisional: snapshot.provisional,
+                                speech_active: snapshot.speech_active,
+                            },
+                        )
+                        .await?;
+                    }
+                }
+            }
+        } else {
+            if preview_rx.changed().await.is_err() {
+                return Ok(());
+            }
+            let snapshot = {
+                let guard = preview_rx.borrow();
+                guard.clone()
+            };
+            if let Some(snapshot) = snapshot {
+                write_json_line(
+                    writer,
+                    &Event::Preview {
+                        protocol_version: PROTOCOL_VERSION,
+                        timestamp_ms: now_ms(),
+                        job_id: snapshot.job_id,
+                        stable: snapshot.stable,
+                        provisional: snapshot.provisional,
+                        speech_active: snapshot.speech_active,
+                    },
+                )
+                .await?;
+            }
+        }
+    }
+}
+
+fn event_matches(event: &Event, kinds: &[EventKind]) -> bool {
+    kinds.iter().any(|kind| {
+        matches!(
+            (kind, event),
+            (EventKind::State, Event::State { .. })
+                | (EventKind::Result, Event::Result { .. })
+                | (EventKind::Error, Event::Error { .. })
+                | (EventKind::Preview, Event::Preview { .. })
+        )
+    })
+}
+
 async fn stream_events(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     mut receiver: broadcast::Receiver<Event>,
+    kinds: &[EventKind],
 ) -> Result<()> {
     loop {
         match receiver.recv().await {
-            Ok(event) => write_json_line(writer, &event).await?,
+            Ok(event) if event_matches(&event, kinds) => {
+                write_json_line(writer, &event).await?;
+            }
+            Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 anyhow::bail!("event subscriber is too slow");
             }
             Err(broadcast::error::RecvError::Closed) => return Ok(()),
         }
     }
+}
+
+async fn update_preview_model_state(state: &AppState, model_state: ModelState) {
+    let mut status = state.status.write().await;
+    if status.preview_model_state.is_none() {
+        return;
+    }
+    status.preview_model_state = Some(model_state);
 }
 
 fn now_ms() -> u64 {
