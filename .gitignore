@@ -4,4 +4,8 @@
 .DS_Store
 .idea/
 .vscode/
+.env
+.env.*
+a.out
+**/secrets.toml
 
