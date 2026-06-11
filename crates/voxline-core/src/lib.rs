@@ -7,4 +7,5 @@ pub mod routing;
 pub mod runtime;
 pub mod secrets;
 pub mod service;
+pub mod snippets;
 pub mod styles;

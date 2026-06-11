@@ -186,9 +186,12 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::Status | Command::AsrStatus => {
             ok_response(request.request_id, state.status.read().await.clone())
         }
-        Command::Toggle { cleanup, style } => {
-            toggle(request.request_id, state, cleanup, style).await
-        }
+        Command::Toggle {
+            cleanup,
+            style,
+            snippet,
+        } => toggle(request.request_id, state, cleanup, style, snippet).await,
+        Command::InsertSnippet { name } => insert_snippet(request.request_id, state, name).await,
         Command::Start => start(request.request_id, state, None, None).await,
         Command::Stop => stop(request.request_id, state).await,
         Command::Cancel => cancel(request.request_id, state).await,
@@ -414,10 +417,20 @@ async fn toggle(
     state: &AppState,
     cleanup: Option<CleanupOverride>,
     style: Option<String>,
+    snippet: Option<String>,
 ) -> Response {
     let job_state = state.status.read().await.job_state.clone();
     match job_state {
-        JobState::Idle => start(request_id, state, cleanup, style).await,
+        JobState::Idle => {
+            if let Some(name) = snippet
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                return insert_snippet(request_id, state, name.into()).await;
+            }
+            start(request_id, state, cleanup, style).await
+        }
         JobState::Recording => stop(request_id, state).await,
         _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
     }
@@ -588,46 +601,26 @@ async fn finish_dictation(
         status.cleanup_enabled = cleanup_enabled;
     }
 
-    let clipboard_snapshot = state
-        .injection
-        .restore_clipboard
-        .then(voxline_platform::save_clipboard);
-    let copied_to_clipboard = match copy_final_text(state, &recording.job_id, &final_text).await {
-        Ok(copied) => copied,
+    let delivery = match deliver_text_to_target(
+        state,
+        &recording.job_id,
+        &final_text,
+        target_at_stop,
+        started,
+        routing.prefer_clipboard_only,
+    )
+    .await
+    {
+        Ok(delivery) => delivery,
         Err(message) => {
             let status = update_state(state, None, JobState::Idle).await;
             emit_error(state, Some(recording.job_id), "clipboard_error", &message);
             return error_response(request_id, "clipboard_error", &message, Some(status));
         }
     };
-    let paste_outcome = if copied_to_clipboard {
-        insert_if_safe(
-            state,
-            &recording.job_id,
-            target_at_stop,
-            started,
-            routing.prefer_clipboard_only,
-        )
-        .await
-    } else {
-        injection::PasteOutcome::disabled("clipboard output is disabled")
-    };
-    let clipboard_restored = if injection::should_restore_clipboard(
-        state.injection.restore_clipboard,
-        paste_outcome.paste_succeeded,
-    ) && let Some(snapshot) = clipboard_snapshot
-    {
-        voxline_platform::wait_for_clipboard(state.injection.paste_delay_ms);
-        match voxline_platform::restore_clipboard(snapshot) {
-            Ok(()) => true,
-            Err(error) => {
-                warn!(%error, "failed to restore previous clipboard");
-                false
-            }
-        }
-    } else {
-        false
-    };
+    let copied_to_clipboard = delivery.copied_to_clipboard;
+    let paste_outcome = delivery.paste_outcome;
+    let clipboard_restored = delivery.clipboard_restored;
 
     let result = DictationResult {
         job_id: recording.job_id.clone(),
@@ -641,6 +634,7 @@ async fn finish_dictation(
         clipboard_restored,
         cleanup_used: cleanup_outcome.used,
         cleanup_failed: cleanup_outcome.failed,
+        snippet_used: None,
         insertion_reason: paste_outcome.insertion_reason.clone(),
     };
     let _ = state.events.send(Event::Result {
@@ -786,6 +780,162 @@ async fn cleanup_preview(
             .await
         }
     }
+}
+
+async fn insert_snippet(request_id: String, state: &AppState, name: String) -> Response {
+    if state.status.read().await.job_state != JobState::Idle {
+        return state_error(request_id, state, "busy", "VoxLine is busy").await;
+    }
+    let started = Instant::now();
+    let job_id = JobId::new();
+    let target_at_insert = voxline_platform::capture_active_target();
+    *state.target_at_start.lock().await = target_at_insert.clone();
+    let paths_config = Config::load_or_default()
+        .map(|config| config.paths)
+        .unwrap_or_default();
+    let prefer_clipboard_only =
+        prefer_clipboard_for_target(target_at_insert.as_ref(), &paths_config);
+    let content = match voxline_core::snippets::load_snippet_content(&paths_config, &name) {
+        Ok(content) => content,
+        Err(error) => {
+            return state_error(request_id, state, "snippet_error", &error.to_string()).await;
+        }
+    };
+    let delivery = match deliver_text_to_target(
+        state,
+        &job_id,
+        &content,
+        target_at_insert,
+        started,
+        prefer_clipboard_only,
+    )
+    .await
+    {
+        Ok(delivery) => delivery,
+        Err(message) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            emit_error(state, Some(job_id), "clipboard_error", &message);
+            return error_response(request_id, "clipboard_error", &message, Some(status));
+        }
+    };
+    let copied_to_clipboard = delivery.copied_to_clipboard;
+    let paste_outcome = delivery.paste_outcome;
+    let clipboard_restored = delivery.clipboard_restored;
+    let transcript = Transcript {
+        text: content.clone(),
+        language: None,
+        duration_ms: None,
+        segments: Vec::new(),
+    };
+    let result = DictationResult {
+        job_id: job_id.clone(),
+        transcript: transcript.clone(),
+        benchmark: AsrBenchmark {
+            model_load_ms: 0,
+            transcribe_ms: 0,
+            audio_duration_ms: 0,
+        },
+        total_ms: elapsed_ms(started),
+        copied_to_clipboard,
+        pasted: paste_outcome.paste_succeeded,
+        paste_attempted: paste_outcome.paste_attempted,
+        paste_succeeded: paste_outcome.paste_succeeded,
+        clipboard_restored,
+        cleanup_used: false,
+        cleanup_failed: false,
+        snippet_used: Some(name),
+        insertion_reason: paste_outcome.insertion_reason.clone(),
+    };
+    let _ = state.events.send(Event::Result {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        result,
+    });
+    if state.notifications.enabled {
+        voxline_platform::notify(
+            "VoxLine",
+            if paste_outcome.paste_succeeded {
+                "Snippet paste command sent"
+            } else if copied_to_clipboard {
+                "Snippet copied to clipboard"
+            } else {
+                "Snippet ready"
+            },
+        );
+    }
+    update_state(state, Some(job_id.clone()), JobState::Done).await;
+    let status = update_state(state, None, JobState::Idle).await;
+    data_response(request_id, status, None, Some(transcript), None)
+}
+
+struct DeliveredText {
+    copied_to_clipboard: bool,
+    paste_outcome: injection::PasteOutcome,
+    clipboard_restored: bool,
+}
+
+fn prefer_clipboard_for_target(
+    target: Option<&voxline_platform::TargetContext>,
+    paths: &PathsConfig,
+) -> bool {
+    target
+        .and_then(|target| {
+            voxline_core::apps::match_app_profile(
+                paths,
+                target.app_id.as_deref(),
+                target.title.as_deref(),
+            )
+        })
+        .and_then(|profile| profile.injection.prefer_clipboard_only)
+        .unwrap_or(false)
+}
+
+async fn deliver_text_to_target(
+    state: &AppState,
+    job_id: &JobId,
+    text: &str,
+    target_at_stop: Option<voxline_platform::TargetContext>,
+    started: Instant,
+    prefer_clipboard_only: bool,
+) -> Result<DeliveredText, String> {
+    let clipboard_snapshot = state
+        .injection
+        .restore_clipboard
+        .then(voxline_platform::save_clipboard);
+    let copied_to_clipboard = copy_final_text(state, job_id, text).await?;
+    let paste_outcome = if copied_to_clipboard {
+        insert_if_safe(
+            state,
+            job_id,
+            target_at_stop,
+            started,
+            prefer_clipboard_only,
+        )
+        .await
+    } else {
+        injection::PasteOutcome::disabled("clipboard output is disabled")
+    };
+    let clipboard_restored = if injection::should_restore_clipboard(
+        state.injection.restore_clipboard,
+        paste_outcome.paste_succeeded,
+    ) && let Some(snapshot) = clipboard_snapshot
+    {
+        voxline_platform::wait_for_clipboard(state.injection.paste_delay_ms);
+        match voxline_platform::restore_clipboard(snapshot) {
+            Ok(()) => true,
+            Err(error) => {
+                warn!(%error, "failed to restore previous clipboard");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    Ok(DeliveredText {
+        copied_to_clipboard,
+        paste_outcome,
+        clipboard_restored,
+    })
 }
 
 async fn copy_final_text(state: &AppState, job_id: &JobId, text: &str) -> Result<bool, String> {
