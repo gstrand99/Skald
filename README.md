@@ -75,6 +75,17 @@ from a style under `styles/` (default: `cleanup.default_style = "default"` loads
 `styles/default.toml` → `styles/default.md`). `config init` installs the bundled
 default style files; edit the `.md` file to change cleanup behavior.
 
+Manage cleanup styles:
+
+```bash
+voxline styles list
+voxline styles new professional
+voxline styles edit professional
+voxline styles validate
+voxline cleanup preview --style professional "hey john thanks"
+voxline toggle --style professional --cleanup
+```
+
 **`[secrets]`** — Where to look for API keys. Keys are never stored in
 `config.toml`. Use `voxline secrets set openrouter` (keyring), or set
 `OPENROUTER_API_KEY`, or opt into the insecure file fallback explicitly.

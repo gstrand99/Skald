@@ -52,6 +52,7 @@ struct AppState {
     privacy: PrivacyConfig,
     target_at_start: Mutex<Option<voxline_platform::TargetContext>>,
     cleanup_override: Mutex<Option<CleanupOverride>>,
+    style_override: Mutex<Option<String>>,
 }
 
 #[tokio::main]
@@ -95,6 +96,7 @@ async fn main() -> Result<()> {
         privacy: config.privacy,
         target_at_start: Mutex::new(None),
         cleanup_override: Mutex::new(None),
+        style_override: Mutex::new(None),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -182,8 +184,10 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::Status | Command::AsrStatus => {
             ok_response(request.request_id, state.status.read().await.clone())
         }
-        Command::Toggle { cleanup } => toggle(request.request_id, state, cleanup).await,
-        Command::Start => start(request.request_id, state, None).await,
+        Command::Toggle { cleanup, style } => {
+            toggle(request.request_id, state, cleanup, style).await
+        }
+        Command::Start => start(request.request_id, state, None, None).await,
         Command::Stop => stop(request.request_id, state).await,
         Command::Cancel => cancel(request.request_id, state).await,
         Command::Transcribe { audio_path } => {
@@ -195,7 +199,9 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::TestClipboard => test_clipboard(request.request_id, state).await,
         Command::TestPaste => test_paste(request.request_id, state).await,
         Command::TestOpenrouter => test_openrouter(request.request_id, state).await,
-        Command::CleanupPreview { text } => cleanup_preview(request.request_id, state, text).await,
+        Command::CleanupPreview { text, style } => {
+            cleanup_preview(request.request_id, state, text, style).await
+        }
         Command::DaemonEnvironment => {
             daemon_environment_response(request.request_id, state.status.read().await.clone())
         }
@@ -405,21 +411,28 @@ async fn toggle(
     request_id: String,
     state: &AppState,
     cleanup: Option<CleanupOverride>,
+    style: Option<String>,
 ) -> Response {
     let job_state = state.status.read().await.job_state.clone();
     match job_state {
-        JobState::Idle => start(request_id, state, cleanup).await,
+        JobState::Idle => start(request_id, state, cleanup, style).await,
         JobState::Recording => stop(request_id, state).await,
         _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
     }
 }
 
-async fn start(request_id: String, state: &AppState, cleanup: Option<CleanupOverride>) -> Response {
+async fn start(
+    request_id: String,
+    state: &AppState,
+    cleanup: Option<CleanupOverride>,
+    style: Option<String>,
+) -> Response {
     if state.status.read().await.job_state != JobState::Idle {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     let job_id = JobId::new();
     *state.cleanup_override.lock().await = cleanup;
+    *state.style_override.lock().await = style;
     *state.target_at_start.lock().await = voxline_platform::capture_active_target();
     match state.audio.start(job_id.clone()).await {
         Ok(()) => {
@@ -507,7 +520,12 @@ async fn finish_dictation(
     }
 
     let cleanup_override = state.cleanup_override.lock().await.take();
+    let style_override = state.style_override.lock().await.take();
     let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let style_name = voxline_core::styles::resolve_style_name(
+        style_override.as_deref(),
+        &cleanup_config.default_style,
+    );
     let raw_text = transcript.text.clone();
     let cleanup_outcome = if should_run_cleanup(
         cleanup_enabled,
@@ -516,7 +534,14 @@ async fn finish_dictation(
         cleanup_config.skip_if_word_count_below,
     ) {
         update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
-        match cleanup::run_cleanup(&cleanup_config, &paths_config, &secrets_config, &raw_text).await
+        match cleanup::run_cleanup(
+            &cleanup_config,
+            &paths_config,
+            &secrets_config,
+            &style_name,
+            &raw_text,
+        )
+        .await
         {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -632,10 +657,12 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
         )
         .await;
     }
+    let style_name = voxline_core::styles::resolve_style_name(None, &cleanup_config.default_style);
     match cleanup::run_cleanup(
         &cleanup_config,
         &paths_config,
         &secrets_config,
+        &style_name,
         "VoxLine OpenRouter test",
     )
     .await
@@ -668,7 +695,12 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
     }
 }
 
-async fn cleanup_preview(request_id: String, state: &AppState, text: String) -> Response {
+async fn cleanup_preview(
+    request_id: String,
+    state: &AppState,
+    text: String,
+    style: Option<String>,
+) -> Response {
     let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
     if !cleanup_enabled && cleanup_config.provider == "none" {
         return state_error(
@@ -679,7 +711,17 @@ async fn cleanup_preview(request_id: String, state: &AppState, text: String) -> 
         )
         .await;
     }
-    match cleanup::run_cleanup(&cleanup_config, &paths_config, &secrets_config, &text).await {
+    let style_name =
+        voxline_core::styles::resolve_style_name(style.as_deref(), &cleanup_config.default_style);
+    match cleanup::run_cleanup(
+        &cleanup_config,
+        &paths_config,
+        &secrets_config,
+        &style_name,
+        &text,
+    )
+    .await
+    {
         Ok(outcome) => {
             let status = state.status.read().await.clone();
             Response {
