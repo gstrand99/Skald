@@ -14,8 +14,9 @@ use tokio::{
 use voxline_core::{
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
     config::Config,
+    paths,
     protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
-    runtime::{runtime_dir, socket_path, verify_mode},
+    runtime::{runtime_dir_for, socket_path_for, verify_mode},
     secrets,
 };
 use voxline_platform::{
@@ -123,6 +124,9 @@ enum ConfigCommands {
         force: bool,
     },
     Validate,
+    Profile {
+        name: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -169,6 +173,7 @@ enum VocabAddCommands {
 }
 
 #[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 struct DoctorReport {
     environment: voxline_platform::EnvironmentReport,
     config_path: String,
@@ -189,6 +194,7 @@ struct DoctorReport {
     secrets: secrets::SecretStatus,
     cleanup_provider: String,
     cleanup_warning: Option<String>,
+    config_layout_ready: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -379,12 +385,19 @@ fn config(command: &ConfigCommands) -> Result<()> {
             config.validate()?;
             println!("configuration is valid");
         }
+        ConfigCommands::Profile { name } => {
+            let mut config = Config::load_or_default()?;
+            config.apply_profile(name)?;
+            let path = config.save()?;
+            println!("Applied config profile {name} in {}", path.display());
+            println!("Restart voxlined if it is already running.");
+        }
     }
     Ok(())
 }
 
 async fn send(command: Command) -> Result<Response> {
-    let socket = socket_path()?;
+    let socket = configured_socket_path()?;
     let stream = UnixStream::connect(&socket).await.with_context(|| {
         format!(
             "cannot connect to {}; is voxlined running?",
@@ -407,7 +420,7 @@ async fn send(command: Command) -> Result<Response> {
 }
 
 async fn watch() -> Result<()> {
-    let socket = socket_path()?;
+    let socket = configured_socket_path()?;
     let stream = UnixStream::connect(&socket).await.with_context(|| {
         format!(
             "cannot connect to {}; is voxlined running?",
@@ -461,11 +474,11 @@ fn print_cleanup_response(response: &Response) {
 async fn doctor(json: bool) -> Result<()> {
     let config = Config::load_or_default()?;
     let config_valid = config.validate().is_ok();
-    let runtime = runtime_dir().ok();
+    let runtime = runtime_dir_for(&config.paths).ok();
     let runtime_secure = runtime
         .as_deref()
         .is_some_and(|path| path.exists() && verify_mode(path).is_ok());
-    let socket = socket_path().ok();
+    let socket = socket_path_for(&config.paths).ok();
     let daemon_reachable = match &socket {
         Some(path) => UnixStream::connect(path).await.is_ok(),
         None => false,
@@ -483,7 +496,7 @@ async fn doctor(json: bool) -> Result<()> {
     let session = cli_environment.session_type.as_deref().unwrap_or("unknown");
     let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
     let trigger = trigger_guidance(session, desktop);
-    let model_path = expand_home(&config.asr.model_path);
+    let model_path = paths::expand_home(&config.asr.model_path);
     let secret_status = secrets::secret_status(&config.secrets);
     let cleanup_warning = if config.cleanup.enabled {
         Some("Warning: transcript text is sent to the configured cleanup provider.".into())
@@ -522,6 +535,7 @@ async fn doctor(json: bool) -> Result<()> {
         secrets: secret_status,
         cleanup_provider: config.cleanup.provider.clone(),
         cleanup_warning,
+        config_layout_ready: paths::layout_is_scaffolded(&config.paths),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -599,6 +613,11 @@ fn print_doctor(report: &DoctorReport) {
         yes_no(report.secrets.openrouter_configured)
     );
     println!("  Env fallback: {}", yes_no(report.secrets.env_configured));
+    println!("Config layout:");
+    println!(
+        "  styles/apps/snippets dirs: {}",
+        yes_no(report.config_layout_ready)
+    );
     println!("Cleanup:");
     println!("  Provider: {}", report.cleanup_provider);
     println!("  Enabled: {}", yes_no(report.privacy.cleanup_enabled));
@@ -665,11 +684,7 @@ fn session_environment_from_protocol(
     }
 }
 
-fn expand_home(path: &str) -> std::path::PathBuf {
-    if let Some(relative) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(relative);
-    }
-    std::path::PathBuf::from(path)
+fn configured_socket_path() -> Result<std::path::PathBuf> {
+    let config = Config::load_or_default()?;
+    socket_path_for(&config.paths).map_err(Into::into)
 }

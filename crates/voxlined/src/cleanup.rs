@@ -4,9 +4,10 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, Header
 use serde::Deserialize;
 use thiserror::Error;
 use voxline_core::{
-    cleanup::{DEFAULT_OPENROUTER_MODEL, DEFAULT_SYSTEM_PROMPT, validate_cleanup_output},
-    config::{CleanupConfig, SecretsConfig},
+    cleanup::{DEFAULT_OPENROUTER_MODEL, validate_cleanup_output},
+    config::{CleanupConfig, PathsConfig, SecretsConfig},
     secrets::{self, SecretError},
+    styles::{self, StyleError},
 };
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -23,6 +24,8 @@ pub enum CleanupError {
     Request(String),
     #[error("cleanup response was invalid: {0}")]
     InvalidResponse(String),
+    #[error("{0}")]
+    Style(#[from] StyleError),
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +38,7 @@ pub struct CleanupOutcome {
 
 pub async fn run_cleanup(
     cleanup: &CleanupConfig,
+    paths: &PathsConfig,
     secrets_config: &SecretsConfig,
     input: &str,
 ) -> Result<CleanupOutcome, CleanupError> {
@@ -48,11 +52,13 @@ pub async fn run_cleanup(
     } else {
         cleanup.model.as_str()
     };
+    let system_prompt = styles::load_style_prompt(paths, &cleanup.default_style)?;
     let cleaned = request_openrouter(
         &api_key,
         model,
         cleanup.temperature,
         cleanup.timeout_ms,
+        &system_prompt,
         input,
     )
     .await?;
@@ -92,6 +98,7 @@ async fn request_openrouter(
     model: &str,
     temperature: f32,
     timeout_ms: u64,
+    system_prompt: &str,
     input: &str,
 ) -> Result<String, CleanupError> {
     let client = reqwest::Client::builder()
@@ -117,7 +124,7 @@ async fn request_openrouter(
         "model": model,
         "temperature": temperature,
         "messages": [
-            {"role": "system", "content": DEFAULT_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": input}
         ]
     });

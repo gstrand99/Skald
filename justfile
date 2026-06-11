@@ -103,6 +103,10 @@ bench-model-load: build
 build-cuda:
     cargo build -p voxlined --no-default-features --features asr-whisper-rs-cuda
 
+# Create the default config tree and config.toml.
+config-init:
+    cargo run -p voxline-cli -- config init
+
 # Run formatting, linting, and tests.
 check:
     cargo fmt --check
