@@ -9,7 +9,7 @@ use tokio::{
 use voxline_core::{
     config::PreviewConfig,
     preview::{PreviewAgreement, extract_preview_window, ms_to_samples, window_rms_energy},
-    protocol::{Event, JobId, ModelState, PROTOCOL_VERSION},
+    protocol::{JobId, ModelState},
 };
 
 use crate::{asr::AsrError, audio::RecordingTap, preview_asr::PreviewAsrManager};
@@ -56,7 +56,6 @@ impl PreviewCoordinator {
         job_id: JobId,
         tap: RecordingTap,
         preview_asr: PreviewAsrManager,
-        events: tokio::sync::broadcast::Sender<Event>,
         on_model_state: Arc<dyn Fn(ModelState) + Send + Sync>,
     ) {
         if !self.config.enabled {
@@ -66,16 +65,7 @@ impl PreviewCoordinator {
         let config = self.config.clone();
         let updates = self.updates.clone();
         let handle = tokio::spawn(async move {
-            run_preview_loop(
-                job_id,
-                tap,
-                preview_asr,
-                config,
-                updates,
-                events,
-                on_model_state,
-            )
-            .await;
+            run_preview_loop(job_id, tap, preview_asr, config, updates, on_model_state).await;
         });
         *self.session.lock().await = Some(PreviewSession { handle });
     }
@@ -89,14 +79,12 @@ impl PreviewCoordinator {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_preview_loop(
     job_id: JobId,
     tap: RecordingTap,
     preview_asr: PreviewAsrManager,
     config: PreviewConfig,
     updates: watch::Sender<Option<PreviewSnapshot>>,
-    events: tokio::sync::broadcast::Sender<Event>,
     on_model_state: Arc<dyn Fn(ModelState) + Send + Sync>,
 ) {
     on_model_state(ModelState::Loading);
@@ -125,9 +113,7 @@ async fn run_preview_loop(
                         let preview_text = agreement.update(&hypothesis);
                         last_stable.clone_from(&preview_text.stable);
                         publish_preview(
-                            &job_id,
                             &updates,
-                            &events,
                             PreviewSnapshot {
                                 job_id: job_id.clone(),
                                 stable: preview_text.stable,
@@ -163,9 +149,7 @@ async fn run_preview_loop(
                 if !speech_active {
                     if !last_stable.is_empty() {
                         publish_preview(
-                            &job_id,
                             &updates,
-                            &events,
                             PreviewSnapshot {
                                 job_id: job_id.clone(),
                                 stable: last_stable.clone(),
@@ -193,29 +177,6 @@ fn spawn_preview_transcribe(
     tokio::spawn(async move { preview_asr.transcribe_preview(window).await })
 }
 
-fn publish_preview(
-    job_id: &JobId,
-    updates: &watch::Sender<Option<PreviewSnapshot>>,
-    events: &tokio::sync::broadcast::Sender<Event>,
-    snapshot: PreviewSnapshot,
-) {
-    let _ = updates.send(Some(snapshot.clone()));
-    let _ = events.send(Event::Preview {
-        protocol_version: PROTOCOL_VERSION,
-        timestamp_ms: now_ms(),
-        job_id: job_id.clone(),
-        stable: snapshot.stable,
-        provisional: snapshot.provisional,
-        speech_active: snapshot.speech_active,
-    });
-}
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
+fn publish_preview(updates: &watch::Sender<Option<PreviewSnapshot>>, snapshot: PreviewSnapshot) {
+    let _ = updates.send(Some(snapshot));
 }
