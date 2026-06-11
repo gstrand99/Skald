@@ -8,7 +8,7 @@ Reference configurations for each platform. These files document the supported
 | [`linux/config.toml`](linux/config.toml) | Default Linux power-user profile |
 | [`linux/styles/`](linux/styles/) | Default cleanup style metadata and prompt files |
 | [`linux/apps/`](linux/apps/) | Application profile examples (terminal clipboard-only) |
-| [`linux/snippets/`](linux/snippets/) | Insert snippet examples (static content, no LLM) |
+| [`linux/snippets/`](linux/snippets/) | Insert and template snippet examples |
 | `mac/` | Reserved for a future macOS port |
 | `windows/` | Reserved for a future Windows port |
 

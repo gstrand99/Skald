@@ -8,5 +8,6 @@ pub mod routing;
 pub mod runtime;
 pub mod secrets;
 pub mod service;
+pub mod snippet_templates;
 pub mod snippets;
 pub mod styles;

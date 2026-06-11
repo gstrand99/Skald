@@ -2,6 +2,8 @@ mod asr;
 mod audio;
 mod cleanup;
 mod injection;
+mod openrouter;
+mod template_extract;
 
 use std::{
     fs,
@@ -192,6 +194,9 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
             snippet,
         } => toggle(request.request_id, state, cleanup, style, snippet).await,
         Command::InsertSnippet { name } => insert_snippet(request.request_id, state, name).await,
+        Command::TemplatePreview { name, text } => {
+            template_preview(request.request_id, state, name, text).await
+        }
         Command::Start => start(request.request_id, state, None, None).await,
         Command::Stop => stop(request.request_id, state).await,
         Command::Cancel => cancel(request.request_id, state).await,
@@ -566,7 +571,7 @@ async fn finish_dictation(
         apply_voice_commands(&voice_commands_config, &paths_config, &transcript.text);
     let voice_style_override = voice_command_outcome.voice_style;
     let raw_text = voice_command_outcome.raw_text;
-    if let Some(name) = voice_command_outcome.snippet_only {
+    if let Some(name) = voice_command_outcome.insert_snippet_only {
         return deliver_snippet_from_job(
             request_id,
             state,
@@ -577,6 +582,25 @@ async fn finish_dictation(
                 started,
                 paths_config,
                 name,
+                prefer_clipboard_only,
+            },
+        )
+        .await;
+    }
+    if let Some(name) = voice_command_outcome.template_snippet {
+        return deliver_template_from_job(
+            request_id,
+            state,
+            TemplateJobContext {
+                recording,
+                benchmark,
+                target_at_stop,
+                started,
+                cleanup_config,
+                paths_config,
+                secrets_config,
+                name,
+                input: raw_text.clone(),
                 prefer_clipboard_only,
             },
         )
@@ -840,7 +864,8 @@ struct SnippetJobContext {
 struct VoiceCommandOutcome {
     raw_text: String,
     voice_style: Option<String>,
-    snippet_only: Option<String>,
+    insert_snippet_only: Option<String>,
+    template_snippet: Option<String>,
 }
 
 fn apply_voice_commands(
@@ -851,7 +876,8 @@ fn apply_voice_commands(
     let mut outcome = VoiceCommandOutcome {
         raw_text: transcript.to_owned(),
         voice_style: None,
-        snippet_only: None,
+        insert_snippet_only: None,
+        template_snippet: None,
     };
     if !voice_commands_config.enabled {
         return outcome;
@@ -874,12 +900,223 @@ fn apply_voice_commands(
             outcome.voice_style = Some(name);
         }
         voxline_core::commands::CommandTarget::Snippet { name } => {
-            if outcome.raw_text.trim().is_empty() {
-                outcome.snippet_only = Some(name);
+            match voxline_core::snippets::snippet_kind(paths_config, &name) {
+                Ok(voxline_core::snippets::SnippetKind::Insert)
+                    if outcome.raw_text.trim().is_empty() =>
+                {
+                    outcome.insert_snippet_only = Some(name);
+                }
+                Ok(voxline_core::snippets::SnippetKind::Template)
+                    if !outcome.raw_text.trim().is_empty() =>
+                {
+                    outcome.template_snippet = Some(name);
+                }
+                _ => {}
             }
         }
     }
     outcome
+}
+
+struct TemplateJobContext {
+    recording: AudioRecording,
+    benchmark: AsrBenchmark,
+    target_at_stop: Option<voxline_platform::TargetContext>,
+    started: Instant,
+    cleanup_config: CleanupConfig,
+    paths_config: PathsConfig,
+    secrets_config: SecretsConfig,
+    name: String,
+    input: String,
+    prefer_clipboard_only: bool,
+}
+
+#[allow(clippy::too_many_lines)]
+async fn deliver_template_from_job(
+    request_id: String,
+    state: &AppState,
+    job: TemplateJobContext,
+) -> Response {
+    let TemplateJobContext {
+        recording,
+        benchmark,
+        target_at_stop,
+        started,
+        cleanup_config,
+        paths_config,
+        secrets_config,
+        name,
+        input,
+        prefer_clipboard_only,
+    } = job;
+    let metadata =
+        match voxline_core::snippet_templates::load_template_metadata(&paths_config, &name) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                let status = update_state(state, None, JobState::Idle).await;
+                return error_response(
+                    request_id,
+                    "template_error",
+                    &error.to_string(),
+                    Some(status),
+                );
+            }
+        };
+    update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
+    let render_outcome = match template_extract::run_template_snippet(
+        &cleanup_config,
+        &paths_config,
+        &secrets_config,
+        &metadata,
+        &input,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            warn!(%error, "template extraction failed");
+            if template_extract::should_use_raw_fallback(&metadata) {
+                template_extract::raw_fallback_outcome(input)
+            } else {
+                let status = update_state(state, None, JobState::Idle).await;
+                return error_response(
+                    request_id,
+                    "template_error",
+                    &error.to_string(),
+                    Some(status),
+                );
+            }
+        }
+    };
+    let delivery = match deliver_text_to_target(
+        state,
+        &recording.job_id,
+        &render_outcome.text,
+        target_at_stop,
+        started,
+        prefer_clipboard_only,
+    )
+    .await
+    {
+        Ok(delivery) => delivery,
+        Err(message) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            emit_error(
+                state,
+                Some(recording.job_id.clone()),
+                "clipboard_error",
+                &message,
+            );
+            return error_response(request_id, "clipboard_error", &message, Some(status));
+        }
+    };
+    let final_transcript = Transcript {
+        text: render_outcome.text.clone(),
+        language: None,
+        duration_ms: Some(recording.duration_ms),
+        segments: Vec::new(),
+    };
+    let result = DictationResult {
+        job_id: recording.job_id.clone(),
+        transcript: final_transcript.clone(),
+        benchmark: benchmark.clone(),
+        total_ms: elapsed_ms(started),
+        copied_to_clipboard: delivery.copied_to_clipboard,
+        pasted: delivery.paste_outcome.paste_succeeded,
+        paste_attempted: delivery.paste_outcome.paste_attempted,
+        paste_succeeded: delivery.paste_outcome.paste_succeeded,
+        clipboard_restored: delivery.clipboard_restored,
+        cleanup_used: render_outcome.used_extraction,
+        cleanup_failed: render_outcome.failed,
+        snippet_used: Some(name),
+        insertion_reason: delivery.paste_outcome.insertion_reason.clone(),
+    };
+    let _ = state.events.send(Event::Result {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        result,
+    });
+    if state.notifications.enabled {
+        voxline_platform::notify(
+            "VoxLine",
+            if delivery.paste_outcome.paste_succeeded {
+                "Template paste command sent"
+            } else if delivery.copied_to_clipboard {
+                "Template copied to clipboard"
+            } else {
+                "Template ready"
+            },
+        );
+    }
+    update_state(state, Some(recording.job_id.clone()), JobState::Done).await;
+    let status = update_state(state, None, JobState::Idle).await;
+    data_response(
+        request_id,
+        status,
+        Some(recording),
+        Some(final_transcript),
+        Some(benchmark),
+    )
+}
+
+async fn template_preview(
+    request_id: String,
+    state: &AppState,
+    name: String,
+    text: String,
+) -> Response {
+    let (cleanup_config, paths_config, secrets_config, cleanup_enabled, _) = reload_job_config();
+    if !cleanup_enabled || cleanup_config.provider != "openrouter" {
+        return state_error(
+            request_id,
+            state,
+            "template_preview_unavailable",
+            "template extraction requires enabled openrouter cleanup",
+        )
+        .await;
+    }
+    let metadata =
+        match voxline_core::snippet_templates::load_template_metadata(&paths_config, &name) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                return state_error(request_id, state, "template_error", &error.to_string()).await;
+            }
+        };
+    match template_extract::run_template_snippet(
+        &cleanup_config,
+        &paths_config,
+        &secrets_config,
+        &metadata,
+        &text,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            let status = state.status.read().await.clone();
+            Response {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                ok: true,
+                status: Some(status),
+                recording: None,
+                transcript: None,
+                benchmark: None,
+                error: None,
+                session_environment: None,
+                cleaned_text: Some(outcome.text),
+                cleanup_ms: Some(outcome.extract_ms),
+            }
+        }
+        Err(error) => {
+            state_error(
+                request_id,
+                state,
+                "template_preview_failed",
+                &error.to_string(),
+            )
+            .await
+        }
+    }
 }
 
 async fn deliver_snippet_from_job(
