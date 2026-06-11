@@ -52,9 +52,9 @@ enabled = true
 phrases = [
     "thank you.",
     "thanks for watching.",
-    "subtitles by",
-    "subtitle by",
-    "captioned by",
+    "subtitles by*",
+    "subtitle by*",
+    "captioned by*",
 ]
 
 [vocabulary]
