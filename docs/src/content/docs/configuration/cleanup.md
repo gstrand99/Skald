@@ -36,6 +36,7 @@ skip_if_word_count_below = 5
 ```bash
 voxline secrets set openrouter
 voxline cleanup enable openrouter
+voxline cleanup disable
 voxline cleanup preview "hey john thanks for the update"
 voxline toggle --cleanup
 ```

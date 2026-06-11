@@ -40,7 +40,7 @@ case_sensitive = false
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `from` | string | — | Text to match in the raw transcript (whole-phrase matching in the ASR layer). |
+| `from` | string | — | Text to match in the raw transcript at whole-word boundaries in the ASR layer. |
 | `to` | string | — | Replacement text. |
 | `case_sensitive` | boolean | `false` | When false, matching is case-insensitive. |
 
@@ -50,12 +50,15 @@ case_sensitive = false
 voxline vocab list
 voxline vocab test "hyper land is great"
 voxline vocab add phrase "My Project"
-voxline vocab add replace --from "my project" --to "MyProject"
+voxline vocab add replace "open router" "OpenRouter"
 ```
 
-CLI edits rewrite `config.toml`; restart is not required for vocabulary-only changes on the next job (daemon reloads config per job for some paths; vocabulary is read from the ASR worker at transcribe time via loaded config).
+CLI edits rewrite `config.toml`. Restart `voxlined` after vocabulary changes: the ASR
+worker captures vocabulary when it spawns at daemon start.
 
 ## Notes
 
 - Initial prompt biasing works best for short proper nouns and technical terms.
 - Replacements fix consistent ASR mistakes without retraining the model.
+- `voxline vocab test` uses plain substring replacement and can differ from the
+  daemon's whole-word boundary matching.

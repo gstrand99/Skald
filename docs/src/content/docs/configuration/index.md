@@ -48,8 +48,9 @@ A commented reference copy ships in the repository:
 
 ## Preset profiles
 
-Profiles replace most settings while preserving your `[secrets]` and `[cleanup]`
-entries (except `cpu-safe`, which disables cleanup):
+`power-user-nvidia` resets nearly the entire config to built-in defaults,
+preserving only `[secrets]` and `[cleanup]`. `cpu-safe` applies CPU-safe ASR and
+lifecycle settings and disables cleanup without a full reset.
 
 ```bash
 voxline config profile power-user-nvidia

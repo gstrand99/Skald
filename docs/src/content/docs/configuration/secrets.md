@@ -34,7 +34,7 @@ insecure_file_path = "~/.config/voxline/secrets.toml"
 ```bash
 voxline secrets set openrouter
 voxline secrets clear openrouter
-voxline secrets status openrouter
+voxline secrets status
 ```
 
 ## Insecure file format
