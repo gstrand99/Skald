@@ -55,4 +55,7 @@ When `enabled = true`, `voxline config validate` requires:
 
 - Final dictation always uses `[asr]`, not preview settings.
 - Preview model is kept warm in its own worker with `keep_warm` lifecycle internally.
+- When recording stops, the daemon unloads the preview model before final transcription so the
+  large ASR model has GPU/RAM headroom. The preview model reloads on the next recording start
+  (small-model reload latency; validate on your hardware).
 - CPU preview is recommended to avoid competing with large CUDA ASR on the same GPU.

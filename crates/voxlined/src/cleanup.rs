@@ -44,6 +44,7 @@ pub async fn run_cleanup(
     }
     let api_key = secrets::lookup_openrouter_key(secrets_config)?;
     let model = if cleanup.model.trim().is_empty() {
+        // `~` is an OpenRouter routing prefix, not shell tilde-expansion.
         DEFAULT_OPENROUTER_MODEL
     } else {
         cleanup.model.as_str()

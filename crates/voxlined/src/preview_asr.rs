@@ -15,6 +15,9 @@ enum PreviewCommand {
         samples: Vec<f32>,
         reply: oneshot::Sender<Result<String, AsrError>>,
     },
+    Unload {
+        reply: oneshot::Sender<()>,
+    },
 }
 
 impl PreviewAsrManager {
@@ -41,6 +44,15 @@ impl PreviewAsrManager {
             .map_err(|_| AsrError::WorkerStopped)?;
         response.await.map_err(|_| AsrError::WorkerStopped)?
     }
+
+    pub async fn unload(&self) -> Result<(), AsrError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(PreviewCommand::Unload { reply })
+            .map_err(|_| AsrError::WorkerStopped)?;
+        response.await.map_err(|_| AsrError::WorkerStopped)?;
+        Ok(())
+    }
 }
 
 #[allow(clippy::needless_pass_by_value)]
@@ -61,7 +73,14 @@ fn preview_worker_loop(engine: &mut WhisperEngine, receiver: mpsc::Receiver<Prev
                 Err(_) => return,
             },
         };
-        let PreviewCommand::Transcribe { samples, reply } = command;
-        let _ = reply.send(engine.transcribe_preview_samples(&samples));
+        match command {
+            PreviewCommand::Transcribe { samples, reply } => {
+                let _ = reply.send(engine.transcribe_preview_samples(&samples));
+            }
+            PreviewCommand::Unload { reply } => {
+                engine.unload();
+                let _ = reply.send(());
+            }
+        }
     }
 }
