@@ -10,6 +10,7 @@ use tokio::sync::oneshot;
 use voxline_core::{
     config::{AsrConfig, VocabularyConfig},
     protocol::{AsrBenchmark, Transcript, TranscriptSegment},
+    text::apply_vocabulary_replacements,
 };
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters,
@@ -310,7 +311,7 @@ impl Worker {
             .map(|segment| segment.text.as_str())
             .collect::<Vec<_>>()
             .join(" ");
-        let replaced = apply_replacements(raw.trim(), &self.vocabulary);
+        let replaced = apply_vocabulary_replacements(raw.trim(), &self.vocabulary);
         let (text, segments) = apply_hallucination_filter(&replaced, segments, &self.engine.config);
         let transcript = Transcript {
             text,
@@ -371,64 +372,6 @@ fn read_wav(path: &Path) -> Result<(Vec<f32>, u64), AsrError> {
     })?;
     let duration_ms = u64::try_from(samples.len()).unwrap_or(u64::MAX) * 1_000 / 16_000;
     Ok((audio, duration_ms))
-}
-
-fn apply_replacements(input: &str, vocabulary: &VocabularyConfig) -> String {
-    if !vocabulary.enabled || !vocabulary.post_replace_enabled {
-        return input.to_owned();
-    }
-    vocabulary
-        .replacements
-        .iter()
-        .fold(input.to_owned(), |text, rule| {
-            replace_whole_words(&text, &rule.from, &rule.to, rule.case_sensitive)
-        })
-}
-
-fn replace_whole_words(input: &str, from: &str, to: &str, case_sensitive: bool) -> String {
-    if from.is_empty() {
-        return input.to_owned();
-    }
-    let haystack = if case_sensitive {
-        input.to_owned()
-    } else {
-        input.to_ascii_lowercase()
-    };
-    let needle = if case_sensitive {
-        from.to_owned()
-    } else {
-        from.to_ascii_lowercase()
-    };
-    let mut output = String::with_capacity(input.len());
-    let mut cursor = 0;
-    while let Some(relative) = haystack[cursor..].find(&needle) {
-        let start = cursor + relative;
-        let end = start + needle.len();
-        let left_boundary = start == 0
-            || !input[..start]
-                .chars()
-                .next_back()
-                .is_some_and(char::is_alphanumeric);
-        let right_boundary = end == input.len()
-            || !input[end..]
-                .chars()
-                .next()
-                .is_some_and(char::is_alphanumeric);
-        if left_boundary && right_boundary {
-            output.push_str(&input[cursor..start]);
-            output.push_str(to);
-            cursor = end;
-        } else {
-            let next = input[start..]
-                .chars()
-                .next()
-                .map_or(end, |character| start + character.len_utf8());
-            output.push_str(&input[cursor..next]);
-            cursor = next;
-        }
-    }
-    output.push_str(&input[cursor..]);
-    output
 }
 
 fn normalize_for_hallucination_match(input: &str) -> String {
@@ -500,19 +443,6 @@ fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn replaces_only_complete_phrases() {
-        let config = VocabularyConfig::default();
-        assert_eq!(
-            apply_replacements("open router works", &config),
-            "OpenRouter works"
-        );
-        assert_eq!(
-            apply_replacements("reopen router", &config),
-            "reopen router"
-        );
-    }
 
     #[test]
     fn filters_only_short_exact_hallucinations() {

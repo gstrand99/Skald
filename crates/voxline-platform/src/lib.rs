@@ -555,29 +555,91 @@ fn capture_hyprland_placement() -> Option<OverlayPlacementHint> {
 
 fn capture_x11_placement() -> Option<OverlayPlacementHint> {
     let output = command_stdout("xdotool", &["getmouselocation", "--shell"])?;
-    let mut x = None;
-    let mut y = None;
-    for line in output.lines() {
-        if let Some(value) = line.strip_prefix("X=") {
-            x = value.parse().ok();
-        } else if let Some(value) = line.strip_prefix("Y=") {
-            y = value.parse().ok();
-        }
-    }
-    let (cursor_x, cursor_y) = (x?, y?);
-    let geometry =
-        command_stdout("xdotool", &["getdisplaygeometry"]).unwrap_or_else(|| "1920 1080".into());
-    let mut parts = geometry.split_whitespace();
-    let monitor_width = parts.next()?.parse().ok()?;
-    let monitor_height = parts.next()?.parse().ok()?;
+    let values = parse_xdotool_shell(&output);
+    let cursor_x: i32 = values.get("X")?.parse().ok()?;
+    let cursor_y: i32 = values.get("Y")?.parse().ok()?;
+    let screen = values
+        .get("SCREEN")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    let (monitor_x, monitor_y, monitor_width, monitor_height) = x11_screen_geometry(screen)
+        .unwrap_or_else(|| {
+            // Without `xrandr`, only the primary screen size is known and offsets stay at the
+            // origin. Multi-monitor X11 placement needs hardware validation.
+            let geometry = command_stdout("xdotool", &["getdisplaygeometry"])
+                .unwrap_or_else(|| "1920 1080".into());
+            let mut parts = geometry.split_whitespace();
+            let monitor_width = parts.next().and_then(|value| value.parse().ok());
+            let monitor_height = parts.next().and_then(|value| value.parse().ok());
+            (
+                0,
+                0,
+                monitor_width.unwrap_or(1920),
+                monitor_height.unwrap_or(1080),
+            )
+        });
     Some(OverlayPlacementHint {
-        cursor_x,
-        cursor_y,
-        monitor_x: 0,
-        monitor_y: 0,
+        cursor_x: cursor_x.clamp(
+            monitor_x,
+            monitor_x.saturating_add(monitor_width.saturating_sub(1)),
+        ),
+        cursor_y: cursor_y.clamp(
+            monitor_y,
+            monitor_y.saturating_add(monitor_height.saturating_sub(1)),
+        ),
+        monitor_x,
+        monitor_y,
         monitor_width,
         monitor_height,
     })
+}
+
+fn parse_xdotool_shell(output: &str) -> std::collections::HashMap<String, String> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            Some((key.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+fn x11_screen_geometry(screen: usize) -> Option<(i32, i32, i32, i32)> {
+    let output = command_stdout("xrandr", &["--current"])?;
+    let screens = parse_xrandr_connected_geometries(&output);
+    let (monitor_x, monitor_y, monitor_width, monitor_height) =
+        screens.get(screen).or_else(|| screens.first()).copied()?;
+    Some((monitor_x, monitor_y, monitor_width, monitor_height))
+}
+
+fn parse_xrandr_connected_geometries(output: &str) -> Vec<(i32, i32, i32, i32)> {
+    let mut screens = Vec::new();
+    for line in output.lines() {
+        if !line.contains(" connected") {
+            continue;
+        }
+        for token in line.split_whitespace() {
+            if let Some((monitor_width, monitor_height, monitor_x, monitor_y)) =
+                parse_xrandr_geometry_token(token)
+            {
+                screens.push((monitor_x, monitor_y, monitor_width, monitor_height));
+                break;
+            }
+        }
+    }
+    screens
+}
+
+fn parse_xrandr_geometry_token(token: &str) -> Option<(i32, i32, i32, i32)> {
+    let (size, offsets) = token.split_once('+')?;
+    let (monitor_width, monitor_height) = size.split_once('x')?;
+    let (monitor_x, monitor_y) = offsets.split_once('+')?;
+    Some((
+        monitor_width.parse().ok()?,
+        monitor_height.parse().ok()?,
+        monitor_x.parse().ok()?,
+        monitor_y.parse().ok()?,
+    ))
 }
 
 fn parse_xy_pair(text: &str) -> Option<(i32, i32)> {
