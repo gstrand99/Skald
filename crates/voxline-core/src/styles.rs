@@ -46,6 +46,8 @@ pub enum StyleError {
     },
     #[error("style prompt at {0} is empty")]
     EmptyPrompt(PathBuf),
+    #[error("invalid style {style}: {message}")]
+    InvalidPromptFile { style: String, message: String },
     #[error("failed to launch editor {editor}: {source}")]
     EditorLaunch {
         editor: String,
@@ -117,7 +119,17 @@ pub fn list_styles(paths: &PathsConfig) -> Result<Vec<StyleSummary>, StyleError>
         let Some(file_stem) = path.file_stem().and_then(|value| value.to_str()) else {
             continue;
         };
-        let metadata = read_metadata(paths, file_stem)?;
+        let metadata = match read_metadata(paths, file_stem) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                tracing::warn!(
+                    style = file_stem,
+                    error = %error,
+                    "skipping unreadable style metadata file"
+                );
+                continue;
+            }
+        };
         styles.push(StyleSummary {
             name: metadata.name,
             description: metadata.description,
@@ -188,17 +200,28 @@ pub fn validate_style(paths: &PathsConfig, name: &str) -> Result<(), StyleError>
 
 #[must_use]
 pub fn validate_installed_styles(paths: &PathsConfig) -> Vec<StyleValidationIssue> {
-    let Ok(styles) = list_styles(paths) else {
+    let styles_dir = paths::styles_dir(paths);
+    if !styles_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(&styles_dir) else {
         return vec![StyleValidationIssue {
             style: "*".into(),
             message: "styles directory is unreadable".into(),
         }];
     };
     let mut issues = Vec::new();
-    for style in styles {
-        if let Err(error) = validate_style(paths, &style.name) {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("toml")) {
+            continue;
+        }
+        let Some(file_stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Err(error) = validate_style(paths, file_stem) {
             issues.push(StyleValidationIssue {
-                style: style.name,
+                style: file_stem.into(),
                 message: error.to_string(),
             });
         }
@@ -253,7 +276,30 @@ fn read_metadata(paths: &PathsConfig, style_name: &str) -> Result<StyleMetadata,
             metadata.name
         )));
     }
+    validate_metadata_contents(style_name, &metadata)?;
     Ok(metadata)
+}
+
+fn validate_metadata_contents(
+    style_name: &str,
+    metadata: &StyleMetadata,
+) -> Result<(), StyleError> {
+    if metadata.prompt_file.trim().is_empty() {
+        return Err(StyleError::InvalidPromptFile {
+            style: style_name.into(),
+            message: "prompt_file cannot be empty".into(),
+        });
+    }
+    if metadata.prompt_file.contains('/')
+        || metadata.prompt_file.contains('\\')
+        || metadata.prompt_file.contains("..")
+    {
+        return Err(StyleError::InvalidPromptFile {
+            style: style_name.into(),
+            message: "prompt_file must be a file name in the styles directory".into(),
+        });
+    }
+    Ok(())
 }
 
 fn prompt_path_for_style(paths: &PathsConfig, style_name: &str) -> Result<PathBuf, StyleError> {
@@ -348,6 +394,63 @@ mod tests {
         assert!(matches!(
             create_style(&paths, "notes", None),
             Err(StyleError::AlreadyExists(_))
+        ));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_styles_skips_corrupt_file_returns_valid() {
+        let base = std::env::temp_dir().join(format!("voxline-styles-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        create_style(&paths, "good", Some("Valid style.")).unwrap();
+        let corrupt_path = paths::styles_dir(&paths).join("bad.toml");
+        fs::write(&corrupt_path, "not valid toml [[[").unwrap();
+        let styles = list_styles(&paths).unwrap();
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].name, "good");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_invalid_prompt_file_in_metadata() {
+        let base = std::env::temp_dir().join(format!("voxline-styles-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        fs::create_dir_all(paths::styles_dir(&paths)).unwrap();
+        let metadata_path = paths::styles_dir(&paths).join("escape.toml");
+        fs::write(
+            &metadata_path,
+            r#"
+name = "escape"
+description = "Escape attempt."
+prompt_file = "../escape.md"
+"#,
+        )
+        .unwrap();
+        let issues = validate_installed_styles(&paths);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].style, "escape");
+        assert!(issues[0].message.contains("prompt_file"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn load_style_prompt_rejects_escape_prompt_file() {
+        let base = std::env::temp_dir().join(format!("voxline-styles-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        fs::create_dir_all(paths::styles_dir(&paths)).unwrap();
+        let metadata_path = paths::styles_dir(&paths).join("escape.toml");
+        fs::write(
+            &metadata_path,
+            r#"
+name = "escape"
+description = "Escape attempt."
+prompt_file = "../escape.md"
+"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            load_style_prompt(&paths, "escape"),
+            Err(StyleError::InvalidPromptFile { .. })
         ));
         let _ = fs::remove_dir_all(&base);
     }

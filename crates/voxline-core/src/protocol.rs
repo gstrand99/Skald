@@ -7,6 +7,45 @@ use crate::cleanup::CleanupOverride;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// Stable error codes emitted by `voxlined` and consumed by CLI clients.
+///
+/// The daemon still uses string literals today; follow-up work can switch call sites to
+/// these constants.
+pub mod error_codes {
+    pub const INVALID_REQUEST: &str = "invalid_request";
+    pub const PROTOCOL_MISMATCH: &str = "protocol_mismatch";
+    pub const BUSY: &str = "busy";
+    pub const CANNOT_CANCEL: &str = "cannot_cancel";
+    pub const NO_ACTIVE_RECORDING: &str = "no_active_recording";
+    pub const AUDIO_ERROR: &str = "audio_error";
+    pub const ASR_ERROR: &str = "asr_error";
+    pub const NO_SPEECH: &str = "no_speech";
+    pub const EMPTY_TRANSCRIPT: &str = "empty_transcript";
+    pub const CLEANUP_ERROR: &str = "cleanup_error";
+    pub const CLEANUP_DISABLED: &str = "cleanup_disabled";
+    pub const CLEANUP_PREVIEW_FAILED: &str = "cleanup_preview_failed";
+    pub const CLIPBOARD_ERROR: &str = "clipboard_error";
+    pub const CLIPBOARD_TEST_FAILED: &str = "clipboard_test_failed";
+    pub const BENCH_AUDIO_INVALID: &str = "bench_audio_invalid";
+    pub const BENCH_NO_CANDIDATES: &str = "bench_no_candidates";
+    pub const SETUP_RECORD_FAILED: &str = "setup_record_failed";
+    pub const TEMPLATE_ERROR: &str = "template_error";
+    pub const TEMPLATE_PREVIEW_UNAVAILABLE: &str = "template_preview_unavailable";
+    pub const TEMPLATE_PREVIEW_FAILED: &str = "template_preview_failed";
+    pub const SNIPPET_ERROR: &str = "snippet_error";
+    pub const OPENROUTER_TEST_UNAVAILABLE: &str = "openrouter_test_unavailable";
+    pub const OPENROUTER_TEST_FAILED: &str = "openrouter_test_failed";
+    pub const PASTE_TEST_UNAVAILABLE: &str = "paste_test_unavailable";
+    pub const PASTE_TEST_FAILED: &str = "paste_test_failed";
+    pub const PASTE_UNSUPPORTED_SESSION: &str = "paste_unsupported_session";
+    pub const PASTE_TERMINAL_UNSAFE: &str = "paste_terminal_unsafe";
+    pub const PASTE_UNSAFE_STALE: &str = "paste_unsafe_stale";
+    pub const PASTE_UNSAFE_TARGET_CHANGED: &str = "paste_unsafe_target_changed";
+    pub const PASTE_PROFILE_CLIPBOARD_ONLY: &str = "paste_profile_clipboard_only";
+    pub const PASTE_FAILED: &str = "paste_failed";
+    pub const PREVIEW_ASR_ERROR: &str = "preview_asr_error";
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct JobId(pub Ulid);
@@ -159,6 +198,8 @@ pub struct AudioRecording {
     pub rms_energy: f32,
     pub peak_energy: f32,
     pub speech_detected: bool,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -217,6 +258,45 @@ pub struct DictationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet_used: Option<String>,
     pub insertion_reason: String,
+}
+
+/// Metadata-only dictation outcome for broadcast events. Transcript text is omitted
+/// unless explicitly enabled via privacy config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct PublicDictationResult {
+    pub job_id: JobId,
+    pub total_ms: u64,
+    pub copied_to_clipboard: bool,
+    pub paste_attempted: bool,
+    pub paste_succeeded: bool,
+    pub clipboard_restored: bool,
+    pub cleanup_used: bool,
+    pub cleanup_failed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_used: Option<String>,
+    pub insertion_reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<Transcript>,
+}
+
+impl PublicDictationResult {
+    #[must_use]
+    pub fn from_result(result: &DictationResult, include_transcript: bool) -> Self {
+        Self {
+            job_id: result.job_id.clone(),
+            total_ms: result.total_ms,
+            copied_to_clipboard: result.copied_to_clipboard,
+            paste_attempted: result.paste_attempted,
+            paste_succeeded: result.paste_succeeded,
+            clipboard_restored: result.clipboard_restored,
+            cleanup_used: result.cleanup_used,
+            cleanup_failed: result.cleanup_failed,
+            snippet_used: result.snippet_used.clone(),
+            insertion_reason: result.insertion_reason.clone(),
+            transcript: include_transcript.then(|| result.transcript.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -289,7 +369,7 @@ pub enum Event {
     Result {
         protocol_version: u32,
         timestamp_ms: u64,
-        result: DictationResult,
+        result: PublicDictationResult,
     },
     Preview {
         protocol_version: u32,
@@ -330,5 +410,37 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"cmd\":\"toggle\""));
         assert!(json.contains("\"snippet\":\"signature\""));
+    }
+
+    #[test]
+    fn public_dictation_result_omits_transcript_by_default() {
+        let result = DictationResult {
+            job_id: JobId::new(),
+            transcript: Transcript {
+                text: "secret dictated text".into(),
+                language: None,
+                duration_ms: None,
+                segments: vec![],
+            },
+            benchmark: AsrBenchmark {
+                model_load_ms: 0,
+                transcribe_ms: 0,
+                audio_duration_ms: 0,
+            },
+            total_ms: 42,
+            copied_to_clipboard: true,
+            pasted: false,
+            paste_attempted: false,
+            paste_succeeded: false,
+            clipboard_restored: false,
+            cleanup_used: false,
+            cleanup_failed: false,
+            snippet_used: None,
+            insertion_reason: "clipboard_only".into(),
+        };
+        let public = PublicDictationResult::from_result(&result, false);
+        let json = serde_json::to_string(&public).unwrap();
+        assert!(!json.contains("transcript"));
+        assert!(!json.contains("secret dictated text"));
     }
 }

@@ -11,21 +11,16 @@ use std::{io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::UnixStream,
-};
+use tokio::{io::BufReader, net::UnixStream};
 use voxline_core::{
     apps,
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
-    commands,
-    config::Config,
+    client, commands,
+    config::{AutoPasteMode, Config},
     paths,
-    protocol::{
-        Command, Event, EventKind, JobState, PROTOCOL_VERSION, Request, Response,
-        SessionEnvironment,
-    },
+    protocol::{Command, Event, EventKind, JobState, ModelState, Response, SessionEnvironment},
     runtime::{runtime_dir_for, socket_path_for, socket_permissions_ok, verify_mode},
     secrets, snippets, styles,
 };
@@ -48,9 +43,9 @@ struct Cli {
 enum Commands {
     Status,
     Toggle {
-        #[arg(long)]
+        #[arg(long, conflicts_with = "no_cleanup")]
         cleanup: bool,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "cleanup")]
         no_cleanup: bool,
         #[arg(long)]
         style: Option<String>,
@@ -68,8 +63,6 @@ enum Commands {
     Overlay,
     Transcribe {
         audio_file: std::path::PathBuf,
-        #[arg(long)]
-        no_cleanup: bool,
     },
     Asr {
         #[command(subcommand)]
@@ -98,10 +91,13 @@ enum Commands {
         json: bool,
     },
     Setup {
+        /// Skip setup when a config file already exists (never overwrite).
         #[arg(long)]
         if_missing: bool,
+        /// Reconfigure even when a config file already exists.
         #[arg(long)]
         force: bool,
+        /// Run without prompts; requires `--force` to overwrite an existing config.
         #[arg(long)]
         non_interactive: bool,
         #[arg(long)]
@@ -171,6 +167,7 @@ enum ServiceCommands {
     Install,
     Uninstall,
     Start,
+    Restart,
     Stop,
     Status,
 }
@@ -219,9 +216,9 @@ enum BenchCommands {
     },
     Dictation {
         audio_file: std::path::PathBuf,
-        #[arg(long, group = "cleanup_mode")]
+        #[arg(long, conflicts_with = "no_cleanup")]
         cleanup: bool,
-        #[arg(long, group = "cleanup_mode")]
+        #[arg(long, conflicts_with = "cleanup")]
         no_cleanup: bool,
         #[arg(long)]
         paste: bool,
@@ -280,7 +277,19 @@ struct DoctorReport {
     snippet_issues: Vec<String>,
     voice_command_conflicts: Vec<String>,
     voice_commands_enabled: bool,
+    auto_paste_always: bool,
+    audio: AudioReport,
     suggestions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioReport {
+    input_device_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_device_name: Option<String>,
+    supported_input_config: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -290,6 +299,8 @@ struct AsrReport {
     model_exists: bool,
     gpu_requested: bool,
     lifecycle_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_model_state: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -315,7 +326,7 @@ struct PrivacyReport {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Status => print_response(&send(Command::Status).await?),
+        Commands::Status => print_response(&send(Command::Status).await?)?,
         Commands::Toggle {
             cleanup,
             no_cleanup,
@@ -328,21 +339,18 @@ async fn main() -> Result<()> {
                 snippet,
             })
             .await?,
-        ),
-        Commands::Start | Commands::PttStart => print_response(&send(Command::Start).await?),
-        Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?),
-        Commands::Cancel => print_response(&send(Command::Cancel).await?),
+        )?,
+        Commands::Start | Commands::PttStart => print_response(&send(Command::Start).await?)?,
+        Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?)?,
+        Commands::Cancel => print_response(&send(Command::Cancel).await?)?,
         Commands::Watch => watch().await?,
         Commands::Overlay => run_overlay()?,
-        Commands::Transcribe {
-            audio_file,
-            no_cleanup: _,
-        } => print_response(
+        Commands::Transcribe { audio_file } => print_response(
             &send(Command::Transcribe {
                 audio_path: audio_file,
             })
             .await?,
-        ),
+        )?,
         Commands::Asr { command } => {
             let command = match command {
                 AsrCommands::Status => Command::AsrStatus,
@@ -350,7 +358,7 @@ async fn main() -> Result<()> {
                 AsrCommands::Unload => Command::AsrUnload,
                 AsrCommands::Restart => Command::AsrRestart,
             };
-            print_response(&send(command).await?);
+            print_response(&send(command).await?)?;
         }
         Commands::Bench { command } => handle_bench(command).await?,
         Commands::Vocab { command } => vocab(command)?,
@@ -360,10 +368,10 @@ async fn main() -> Result<()> {
         } => record(seconds, cleanup_override(false, no_cleanup)?).await?,
         Commands::Test { command } => match command {
             TestCommands::Mic { seconds } => record(seconds, None).await?,
-            TestCommands::Clipboard => print_response(&send(Command::TestClipboard).await?),
-            TestCommands::Paste => print_response(&send(Command::TestPaste).await?),
+            TestCommands::Clipboard => print_response(&send(Command::TestClipboard).await?)?,
+            TestCommands::Paste => print_response(&send(Command::TestPaste).await?)?,
             TestCommands::Openrouter => {
-                print_cleanup_response(&send(Command::TestOpenrouter).await?);
+                print_cleanup_response(&send(Command::TestOpenrouter).await?)?;
             }
         },
         Commands::Doctor { json } => doctor(json).await?,
@@ -392,17 +400,17 @@ async fn main() -> Result<()> {
             CleanupCommands::Enable { provider } => cleanup_cmd::enable(&provider)?,
             CleanupCommands::Disable => cleanup_cmd::disable()?,
             CleanupCommands::Preview { text, style } => {
-                print_cleanup_response(&send(Command::CleanupPreview { text, style }).await?);
+                print_cleanup_response(&send(Command::CleanupPreview { text, style }).await?)?;
             }
         },
         Commands::Styles { command } => styles_cmd::run(command)?,
         Commands::Apps { command } => apps_cmd::run(command)?,
         Commands::Snippets { command } => match command {
             snippets_cmd::SnippetsCommands::Insert { name } => {
-                print_response(&send(Command::InsertSnippet { name }).await?);
+                print_response(&send(Command::InsertSnippet { name }).await?)?;
             }
             snippets_cmd::SnippetsCommands::Preview { name, text } => {
-                print_cleanup_response(&send(Command::TemplatePreview { name, text }).await?);
+                print_cleanup_response(&send(Command::TemplatePreview { name, text }).await?)?;
             }
             _ => snippets_cmd::run(command)?,
         },
@@ -412,7 +420,7 @@ async fn main() -> Result<()> {
 }
 
 fn vocab(command: VocabCommands) -> Result<()> {
-    let mut config = Config::load_or_default()?;
+    let mut config = Config::load_validated()?;
     match command {
         VocabCommands::List => {
             for phrase in config.vocabulary.phrases {
@@ -423,10 +431,8 @@ fn vocab(command: VocabCommands) -> Result<()> {
             }
         }
         VocabCommands::Test { text } => {
-            let mut output = text;
-            for replacement in config.vocabulary.replacements {
-                output = output.replace(&replacement.from, &replacement.to);
-            }
+            let output =
+                voxline_core::text::apply_vocabulary_replacements(&text, &config.vocabulary);
             println!("{output}");
         }
         VocabCommands::Add { command } => {
@@ -447,6 +453,7 @@ fn vocab(command: VocabCommands) -> Result<()> {
                     );
                 }
             }
+            config.validate()?;
             println!("{}", config.save()?.display());
         }
     }
@@ -474,7 +481,7 @@ async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
     })
     .await?;
     if !started.ok {
-        print_response(&started);
+        print_response(&started)?;
         bail!("recording did not start");
     }
     println!("Recording for {seconds} seconds...");
@@ -485,7 +492,7 @@ async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
         snippet: None,
     })
     .await?;
-    print_response(&stopped);
+    print_response(&stopped)?;
     if !stopped.ok {
         bail!("recording did not stop cleanly");
     }
@@ -495,11 +502,12 @@ async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
 fn service_command(command: &ServiceCommands) -> Result<()> {
     match command {
         ServiceCommands::Install => {
-            let config = Config::load_or_default()?;
+            let config = Config::load_validated()?;
             service::install(&config.daemon.log_level)
         }
         ServiceCommands::Uninstall => service::uninstall(),
         ServiceCommands::Start => service::start(),
+        ServiceCommands::Restart => service::restart(),
         ServiceCommands::Stop => service::stop(),
         ServiceCommands::Status => service::status(),
     }
@@ -527,58 +535,35 @@ fn config(command: &ConfigCommands) -> Result<()> {
 
 pub(crate) async fn send(command: Command) -> Result<Response> {
     let socket = configured_socket_path()?;
-    let stream = UnixStream::connect(&socket).await.with_context(|| {
-        format!(
-            "cannot connect to {}; is voxlined running?",
-            socket.display()
-        )
-    })?;
-    let (reader, mut writer) = stream.into_split();
-    let request = Request {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: ulid::Ulid::new().to_string(),
-        command,
-    };
-    write_request(&mut writer, &request).await?;
-    let mut lines = BufReader::new(reader).lines();
-    let line = lines
-        .next_line()
-        .await?
-        .context("daemon closed without a response")?;
-    Ok(serde_json::from_str(&line)?)
+    client::request(&socket, command).await
 }
 
 async fn watch() -> Result<()> {
     let socket = configured_socket_path()?;
-    let stream = UnixStream::connect(&socket).await.with_context(|| {
-        format!(
-            "cannot connect to {}; is voxlined running?",
-            socket.display()
-        )
-    })?;
-    let (reader, mut writer) = stream.into_split();
-    let request = Request {
-        protocol_version: PROTOCOL_VERSION,
-        request_id: ulid::Ulid::new().to_string(),
-        command: Command::Subscribe {
-            events: vec![
-                EventKind::State,
-                EventKind::Result,
-                EventKind::Error,
-                EventKind::Preview,
-            ],
-        },
-    };
-    write_request(&mut writer, &request).await?;
-    let mut lines = BufReader::new(reader).lines();
+    let (response, reader) = client::subscribe(
+        &socket,
+        vec![
+            EventKind::State,
+            EventKind::Result,
+            EventKind::Error,
+            EventKind::Preview,
+        ],
+    )
+    .await?;
+    if !response.ok {
+        if let Some(error) = &response.error {
+            bail!("{} ({})", error.message, error.code);
+        }
+        bail!("subscribe rejected");
+    }
+    let mut reader = BufReader::new(reader);
     let mut preview_display = PreviewDisplay::default();
     let mut recording = false;
-    while let Some(line) = lines.next_line().await? {
-        let event: Event = if let Ok(event) = serde_json::from_str(&line) {
-            event
-        } else {
-            println!("{line}");
-            continue;
+    loop {
+        let event = match client::read_event(&mut reader).await {
+            Ok(event) => event,
+            Err(error) if error.to_string() == "daemon closed the event stream" => break,
+            Err(error) => return Err(error),
         };
         match event {
             Event::Preview {
@@ -589,7 +574,7 @@ async fn watch() -> Result<()> {
             } => {
                 preview_display.update(&stable, &provisional, speech_active);
             }
-            Event::State { job_state, .. } => match job_state {
+            Event::State { ref job_state, .. } => match job_state {
                 JobState::Recording => {
                     recording = true;
                     preview_display.begin();
@@ -607,12 +592,32 @@ async fn watch() -> Result<()> {
                     preview_display.finish();
                 }
                 _ if recording => {}
-                _ => println!("{line}"),
+                _ => {
+                    let line = serde_json::to_string(&event)?;
+                    println!("{line}");
+                }
             },
             Event::Result { result, .. } => {
                 recording = false;
                 preview_display.finish();
-                println!("final: {}", result.transcript.text);
+                println!(
+                    "result: job={} total_ms={} copied={} paste_attempted={} paste_succeeded={} clipboard_restored={} cleanup_used={} cleanup_failed={}",
+                    result.job_id.0,
+                    result.total_ms,
+                    result.copied_to_clipboard,
+                    result.paste_attempted,
+                    result.paste_succeeded,
+                    result.clipboard_restored,
+                    result.cleanup_used,
+                    result.cleanup_failed,
+                );
+                if let Some(snippet) = &result.snippet_used {
+                    println!("snippet: {snippet}");
+                }
+                println!("insertion: {}", result.insertion_reason);
+                if let Some(transcript) = &result.transcript {
+                    println!("final: {}", transcript.text);
+                }
             }
             Event::Error { error, .. } => {
                 recording = false;
@@ -699,32 +704,23 @@ fn run_overlay() -> Result<()> {
     }
 }
 
-async fn write_request(
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
-    request: &Request,
-) -> Result<()> {
-    let mut bytes = serde_json::to_vec(request)?;
-    bytes.push(b'\n');
-    writer.write_all(&bytes).await?;
+pub(crate) fn print_response(response: &Response) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(response).context("failed to serialize daemon response")?
+    );
     Ok(())
 }
 
-pub(crate) fn print_response(response: &Response) {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&response).expect("response serializes")
-    );
-}
-
-fn print_cleanup_response(response: &Response) {
+fn print_cleanup_response(response: &Response) -> Result<()> {
     if let Some(text) = &response.cleaned_text {
         println!("{text}");
         if let Some(cleanup_ms) = response.cleanup_ms {
             println!("cleanup_ms: {cleanup_ms}");
         }
-        return;
+        return Ok(());
     }
-    print_response(response);
+    print_response(response)
 }
 
 fn preview_doctor_report(config: &Config) -> Option<PreviewReport> {
@@ -744,6 +740,9 @@ async fn doctor(json: bool) -> Result<()> {
     report.suggestions = build_doctor_suggestions(&report);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
+        if doctor_has_failures(&report) {
+            bail!("doctor found configuration or socket issues");
+        }
         return Ok(());
     }
     print_doctor(&report);
@@ -753,6 +752,15 @@ async fn doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn doctor_has_failures(report: &DoctorReport) -> bool {
+    !report.config_valid
+        || report
+            .socket_path
+            .as_ref()
+            .is_some_and(|_| !report.socket_secure)
+}
+
+#[allow(clippy::too_many_lines)]
 async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let config_valid = config.validate().is_ok();
     let runtime = runtime_dir_for(&config.paths).ok();
@@ -783,6 +791,12 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let trigger = trigger_guidance(session, desktop);
     let model_path = paths::expand_home(&config.asr.model_path);
     let preview = preview_doctor_report(config);
+    let audio = probe_audio_input();
+    let daemon_model_state = if daemon_reachable {
+        fetch_daemon_asr_state().await
+    } else {
+        None
+    };
     let secret_status = secrets::secret_status(&config.secrets);
     let cleanup_warning = if config.cleanup.enabled {
         Some("Warning: transcript text is sent to the configured cleanup provider.".into())
@@ -820,6 +834,7 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
             model_exists: model_path.is_file(),
             gpu_requested: config.asr.gpu,
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
+            daemon_model_state,
         },
         preview,
         paste: voxline_platform::paste_report(),
@@ -848,8 +863,56 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
             })
             .unwrap_or_default(),
         voice_commands_enabled: config.voice_commands.enabled,
+        auto_paste_always: config.injection.auto_paste == AutoPasteMode::Always,
+        audio,
         suggestions: Vec::new(),
     })
+}
+
+fn probe_audio_input() -> AudioReport {
+    let host = cpal::default_host();
+    let Some(device) = host.default_input_device() else {
+        return AudioReport {
+            input_device_present: false,
+            input_device_name: None,
+            supported_input_config: false,
+            warning: Some("no default input device".into()),
+        };
+    };
+    let name = device.name().ok();
+    match device.default_input_config() {
+        Ok(_) => AudioReport {
+            input_device_present: true,
+            input_device_name: name,
+            supported_input_config: true,
+            warning: None,
+        },
+        Err(error) => AudioReport {
+            input_device_present: true,
+            input_device_name: name,
+            supported_input_config: false,
+            warning: Some(format!("no supported input config: {error}")),
+        },
+    }
+}
+
+async fn fetch_daemon_asr_state() -> Option<String> {
+    let response = send(Command::AsrStatus).await.ok()?;
+    if !response.ok {
+        return None;
+    }
+    response
+        .status
+        .map(|status| format_model_state(&status.final_model_state))
+}
+
+fn format_model_state(state: &ModelState) -> String {
+    match state {
+        ModelState::Unloaded => "unloaded".into(),
+        ModelState::Loading => "loading".into(),
+        ModelState::Ready => "ready".into(),
+        ModelState::Failed { code, message } => format!("failed ({code}: {message})"),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -866,6 +929,16 @@ fn print_doctor(report: &DoctorReport) {
     println!(
         "Desktop: {}",
         report.environment.desktop.as_deref().unwrap_or("unknown")
+    );
+    println!("CLI environment:");
+    println!(
+        "  Wayland display: {}",
+        yes_no(report.environment.wayland_display_present)
+    );
+    println!("  DISPLAY: {}", yes_no(report.environment.display_present));
+    println!(
+        "  D-Bus session: {}",
+        yes_no(report.environment.dbus_session_bus_present)
     );
     println!("Config valid: {}", yes_no(report.config_valid));
     println!("Runtime secure: {}", yes_no(report.runtime_secure));
@@ -919,6 +992,28 @@ fn print_doctor(report: &DoctorReport) {
         yes_no(report.secrets.openrouter_configured)
     );
     println!("  Env fallback: {}", yes_no(report.secrets.env_configured));
+    println!(
+        "  Insecure file fallback: {}",
+        yes_no(report.secrets.insecure_file_enabled)
+    );
+    if report.secrets.insecure_file_enabled {
+        println!("  Warning: plaintext secrets file fallback is enabled.");
+    }
+    println!("Audio:");
+    println!(
+        "  Input device: {}",
+        yes_no(report.audio.input_device_present)
+    );
+    if let Some(name) = &report.audio.input_device_name {
+        println!("  Device name: {name}");
+    }
+    println!(
+        "  Supported input config: {}",
+        yes_no(report.audio.supported_input_config)
+    );
+    if let Some(warning) = &report.audio.warning {
+        println!("  Warning: {warning}");
+    }
     println!("Config layout:");
     println!(
         "  styles/apps/snippets dirs: {}",
@@ -997,6 +1092,9 @@ fn print_doctor(report: &DoctorReport) {
     println!("  Model exists: {}", yes_no(report.asr.model_exists));
     println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
     println!("  Lifecycle: {}", report.asr.lifecycle_mode);
+    if let Some(state) = &report.asr.daemon_model_state {
+        println!("  Daemon model state: {state}");
+    }
     if let Some(preview) = &report.preview {
         println!("Preview:");
         println!("  Model: {}", preview.model_path);
@@ -1017,6 +1115,9 @@ fn print_doctor(report: &DoctorReport) {
         "  Paste available: {}",
         yes_no(report.paste.paste_available)
     );
+    if report.auto_paste_always {
+        println!("  Warning: auto_paste = \"always\" bypasses paste-safety target checks.");
+    }
     println!("  Behavior: {}", report.paste.reason);
     if !report.suggestions.is_empty() {
         println!("Suggestions:");
@@ -1083,6 +1184,17 @@ fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
     {
         suggestions.push("Run `voxline secrets set openrouter` before using cleanup.".into());
     }
+    if report.secrets.insecure_file_enabled {
+        suggestions.push(
+            "Migrate to the keyring with `voxline secrets set openrouter` and disable allow_insecure_file_fallback in config.".into(),
+        );
+    }
+    if report.auto_paste_always {
+        suggestions.push(
+            "auto_paste = \"always\" bypasses paste-safety target checks; consider \"safe\"."
+                .into(),
+        );
+    }
     suggestions
 }
 
@@ -1093,7 +1205,7 @@ async fn handle_bench(command: BenchCommands) -> Result<()> {
                 audio_path: audio_file,
             })
             .await?,
-        ),
+        )?,
         BenchCommands::EndToEnd { audio_file, json } => {
             bench_transcribe(
                 &send(Command::Transcribe {
@@ -1110,13 +1222,7 @@ async fn handle_bench(command: BenchCommands) -> Result<()> {
             paste,
             json,
         } => {
-            let cleanup_override = if cleanup {
-                Some(voxline_core::cleanup::CleanupOverride::Force)
-            } else if no_cleanup {
-                Some(voxline_core::cleanup::CleanupOverride::Disable)
-            } else {
-                None
-            };
+            let cleanup_override = cleanup_override(cleanup, no_cleanup)?;
             bench_dictation(
                 &send(Command::BenchDictation {
                     audio_path: audio_file,
@@ -1129,7 +1235,7 @@ async fn handle_bench(command: BenchCommands) -> Result<()> {
         }
         BenchCommands::ModelLoad => {
             let _ = send(Command::AsrUnload).await?;
-            print_response(&send(Command::AsrLoad).await?);
+            print_response(&send(Command::AsrLoad).await?)?;
         }
     }
     Ok(())
@@ -1141,7 +1247,7 @@ fn bench_transcribe(response: &Response, json: bool) -> Result<()> {
         return Ok(());
     }
     if !response.ok {
-        print_response(response);
+        print_response(response)?;
         bail!("benchmark failed");
     }
     let Some(benchmark) = &response.benchmark else {
@@ -1158,7 +1264,7 @@ fn bench_dictation(response: &Response, json: bool) -> Result<()> {
         return Ok(());
     }
     if !response.ok {
-        print_response(response);
+        print_response(response)?;
         bail!("benchmark failed");
     }
     let Some(dictation) = &response.dictation else {
@@ -1220,6 +1326,6 @@ fn session_environment_from_protocol(
 }
 
 fn configured_socket_path() -> Result<std::path::PathBuf> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     socket_path_for(&config.paths).map_err(Into::into)
 }

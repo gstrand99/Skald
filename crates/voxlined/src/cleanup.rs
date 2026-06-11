@@ -44,6 +44,7 @@ pub async fn run_cleanup(
     }
     let api_key = secrets::lookup_openrouter_key(secrets_config)?;
     let model = if cleanup.model.trim().is_empty() {
+        // `~` is an OpenRouter routing prefix, not shell tilde-expansion.
         DEFAULT_OPENROUTER_MODEL
     } else {
         cleanup.model.as_str()
@@ -84,11 +85,11 @@ pub fn passthrough_outcome(text: impl Into<String>) -> CleanupOutcome {
     }
 }
 
-pub fn failed_fallback_outcome(raw: impl Into<String>) -> CleanupOutcome {
+pub fn failed_fallback_outcome(raw: impl Into<String>, cleanup_ms: u64) -> CleanupOutcome {
     CleanupOutcome {
         text: raw.into(),
         used: true,
         failed: true,
-        cleanup_ms: 0,
+        cleanup_ms,
     }
 }

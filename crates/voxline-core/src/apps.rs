@@ -116,7 +116,17 @@ pub fn list_app_profiles(paths: &PathsConfig) -> Result<Vec<AppProfileSummary>, 
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
             continue;
         };
-        let profile = read_profile(paths, stem)?;
+        let profile = match read_profile(paths, stem) {
+            Ok(profile) => profile,
+            Err(error) => {
+                tracing::warn!(
+                    app = stem,
+                    error = %error,
+                    "skipping unreadable app profile file"
+                );
+                continue;
+            }
+        };
         profiles.push(AppProfileSummary {
             name: profile.name,
             default_style: profile.default_style,
@@ -159,17 +169,28 @@ pub fn validate_app_profile(paths: &PathsConfig, name: &str) -> Result<(), AppEr
 
 #[must_use]
 pub fn validate_installed_app_profiles(paths: &PathsConfig) -> Vec<AppValidationIssue> {
-    let Ok(profiles) = list_app_profiles(paths) else {
+    let apps_dir = paths::apps_dir(paths);
+    if !apps_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(&apps_dir) else {
         return vec![AppValidationIssue {
             app: "*".into(),
             message: "apps directory is unreadable".into(),
         }];
     };
     let mut issues = Vec::new();
-    for profile in profiles {
-        if let Err(error) = validate_app_profile(paths, &profile.name) {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("toml")) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Err(error) = validate_app_profile(paths, stem) {
             issues.push(AppValidationIssue {
-                app: profile.name,
+                app: stem.into(),
                 message: error.to_string(),
             });
         }
@@ -318,6 +339,19 @@ mod tests {
             matched.as_ref().map(|profile| profile.name.as_str()),
             Some("terminal")
         );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_app_profiles_skips_corrupt_file_returns_valid() {
+        let base = std::env::temp_dir().join(format!("voxline-apps-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        ensure_default_app_profiles(&paths).unwrap();
+        let corrupt_path = paths::apps_dir(&paths).join("bad.toml");
+        fs::write(&corrupt_path, "not valid toml [[[").unwrap();
+        let profiles = list_app_profiles(&paths).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "terminal");
         let _ = fs::remove_dir_all(&base);
     }
 }

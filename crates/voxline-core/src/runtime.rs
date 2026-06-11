@@ -1,9 +1,10 @@
 use std::{
     env, fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
+use rustix::process::geteuid;
 use thiserror::Error;
 
 use crate::{config::PathsConfig, paths};
@@ -59,7 +60,19 @@ pub fn ensure_runtime_dir_for(paths: &PathsConfig) -> Result<PathBuf, RuntimeErr
         }
     })?;
     verify_mode(&path)?;
+    verify_owner(&path)?;
     Ok(path)
+}
+
+fn verify_owner(path: &Path) -> Result<(), RuntimeError> {
+    let metadata = fs::metadata(path).map_err(|source| RuntimeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.uid() != geteuid().as_raw() {
+        return Err(RuntimeError::NotOwned(path.to_path_buf()));
+    }
+    Ok(())
 }
 
 pub fn verify_mode(path: &Path) -> Result<(), RuntimeError> {
@@ -111,7 +124,7 @@ pub fn verify_socket(path: &Path) -> Result<(), RuntimeError> {
             ),
         });
     }
-    Ok(())
+    verify_owner(path)
 }
 
 #[cfg(test)]
@@ -131,4 +144,14 @@ mod tests {
         assert!(verify_socket(&socket).is_ok());
         let _ = std::fs::remove_file(socket);
     }
+
+    #[test]
+    fn verify_owner_accepts_current_user_file() {
+        let path = std::env::temp_dir().join(format!("voxline-owner-test-{}", std::process::id()));
+        std::fs::write(&path, b"").expect("temp file");
+        assert!(verify_owner(&path).is_ok());
+        let _ = std::fs::remove_file(path);
+    }
+
+    // UID mismatch cannot be exercised without creating a foreign-owned file.
 }

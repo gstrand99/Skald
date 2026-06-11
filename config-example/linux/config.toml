@@ -7,6 +7,9 @@
 #   voxline config validate
 #   voxline doctor
 
+# Schema version for future migrations. Must be 1 in v1.
+config_version = 1
+
 [daemon]
 log_level = "info"
 max_concurrent_jobs = 1
@@ -52,9 +55,9 @@ enabled = true
 phrases = [
     "thank you.",
     "thanks for watching.",
-    "subtitles by",
-    "subtitle by",
-    "captioned by",
+    "subtitles by*",
+    "subtitle by*",
+    "captioned by*",
 ]
 
 [vocabulary]
@@ -128,11 +131,16 @@ optional_paste_command = ""
 enabled = true
 
 [privacy]
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_history = false
 store_audio = false
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_raw_transcript = false
+# Reserved / not implemented in v1 — must stay false (validation rejects true).
 store_cleaned_transcript = false
 log_transcripts = false
+# Include transcript text in broadcast result events (debug only; default false).
+emit_transcript_in_events = false
 
 # Experimental: spoken routing at the start of a transcript (disabled by default).
 # Requires a prefix such as "voxline professional ..." or "voxline signature".

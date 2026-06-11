@@ -12,6 +12,7 @@ pub struct ModelCatalogEntry {
     pub file_name: &'static str,
     pub gpu: bool,
     pub approx_size_mib: u64,
+    pub sha256: &'static str,
     pub description: &'static str,
 }
 
@@ -21,6 +22,7 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         file_name: "ggml-base.en.bin",
         gpu: false,
         approx_size_mib: 150,
+        sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
         description: "Fast CPU baseline",
     },
     ModelCatalogEntry {
@@ -28,6 +30,7 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         file_name: "ggml-small.en.bin",
         gpu: false,
         approx_size_mib: 500,
+        sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
         description: "Quality CPU default",
     },
     ModelCatalogEntry {
@@ -35,6 +38,7 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         file_name: "ggml-small.en-q5_1.bin",
         gpu: true,
         approx_size_mib: 200,
+        sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
         description: "Fast GPU model, good for preview",
     },
     ModelCatalogEntry {
@@ -42,6 +46,7 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         file_name: "ggml-large-v3-turbo-q5_0.bin",
         gpu: true,
         approx_size_mib: 1_500,
+        sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
         description: "Highest quality CUDA model",
     },
 ];
