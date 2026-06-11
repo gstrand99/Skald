@@ -13,6 +13,7 @@ use voxline_core::{
     models::{ModelCandidate, recommended_candidates},
     paths::{resolve_model_dir, scaffold_config_layout},
     protocol::{AsrBenchCandidate, Command},
+    service::SERVICE_UNIT_NAME,
     setup::{SetupSelection, mark_setup_complete, needs_setup, setup_fixture_path},
     system_probe::{SystemProfile, dependency_report, probe_system},
 };
@@ -37,11 +38,21 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     }
 
     let config = Config::load_or_default()?;
-    if options.if_missing && !needs_setup(&config.paths) && !options.force {
-        return Ok(());
-    }
+    let config_path_exists = Config::path()?.is_file();
 
-    if Config::path()?.is_file() && !options.force && !options.non_interactive {
+    if config_path_exists && !options.force {
+        if options.if_missing {
+            if needs_setup(&config.paths) {
+                println!("Config file exists; skipping setup (--if-missing).");
+            }
+            return Ok(());
+        }
+        if options.non_interactive {
+            bail!(
+                "config file already exists at {}; pass --force to reconfigure",
+                Config::path()?.display()
+            );
+        }
         let reconfigure = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
             .with_prompt("VoxLine is already configured. Re-run setup?")
             .default(false)
@@ -115,7 +126,8 @@ pub async fn run(options: SetupOptions) -> Result<()> {
             .interact()?
     };
 
-    let _daemon = ensure_daemon().await?;
+    let daemon_guard = ensure_daemon().await?;
+    let daemon_was_running = daemon_guard.child.is_none();
 
     let fixture = Config::ensure_setup_fixture_dir(&config.paths)?;
     record_fixture(RECORD_SECONDS, &fixture, options.non_interactive).await?;
@@ -203,6 +215,7 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     final_config.save()?;
     mark_setup_complete(&final_config.paths, &selection)?;
 
+    let mut service_action_taken = false;
     if !options.non_interactive {
         let install_service = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
             .with_prompt("Install the systemd user service for voxlined?")
@@ -210,6 +223,14 @@ pub async fn run(options: SetupOptions) -> Result<()> {
             .interact()?;
         if install_service {
             service::install(&final_config.daemon.log_level)?;
+            let restart_now = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+                .with_prompt("Start or restart the voxlined service now?")
+                .default(true)
+                .interact()?;
+            if restart_now {
+                service::restart()?;
+                service_action_taken = true;
+            }
         }
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
@@ -223,6 +244,10 @@ pub async fn run(options: SetupOptions) -> Result<()> {
         }
     }
 
+    if daemon_was_running && !service_action_taken {
+        print_daemon_restart_warning();
+    }
+
     if options.json {
         println!("{}", serde_json::to_string_pretty(&selection)?);
     } else {
@@ -233,6 +258,14 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn print_daemon_restart_warning() {
+    println!();
+    println!("Warning: voxlined is still running with the previous configuration.");
+    println!(
+        "Restart it with `voxline service restart` or `systemctl --user restart {SERVICE_UNIT_NAME}`.",
+    );
 }
 
 fn print_profile(profile: &SystemProfile, cuda_build: Option<bool>) {

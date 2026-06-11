@@ -98,10 +98,13 @@ enum Commands {
         json: bool,
     },
     Setup {
+        /// Skip setup when a config file already exists (never overwrite).
         #[arg(long)]
         if_missing: bool,
+        /// Reconfigure even when a config file already exists.
         #[arg(long)]
         force: bool,
+        /// Run without prompts; requires `--force` to overwrite an existing config.
         #[arg(long)]
         non_interactive: bool,
         #[arg(long)]
@@ -171,6 +174,7 @@ enum ServiceCommands {
     Install,
     Uninstall,
     Start,
+    Restart,
     Stop,
     Status,
 }
@@ -500,6 +504,7 @@ fn service_command(command: &ServiceCommands) -> Result<()> {
         }
         ServiceCommands::Uninstall => service::uninstall(),
         ServiceCommands::Start => service::start(),
+        ServiceCommands::Restart => service::restart(),
         ServiceCommands::Stop => service::stop(),
         ServiceCommands::Status => service::status(),
     }
@@ -612,7 +617,24 @@ async fn watch() -> Result<()> {
             Event::Result { result, .. } => {
                 recording = false;
                 preview_display.finish();
-                println!("final: {}", result.transcript.text);
+                println!(
+                    "result: job={} total_ms={} copied={} paste_attempted={} paste_succeeded={} clipboard_restored={} cleanup_used={} cleanup_failed={}",
+                    result.job_id.0,
+                    result.total_ms,
+                    result.copied_to_clipboard,
+                    result.paste_attempted,
+                    result.paste_succeeded,
+                    result.clipboard_restored,
+                    result.cleanup_used,
+                    result.cleanup_failed,
+                );
+                if let Some(snippet) = &result.snippet_used {
+                    println!("snippet: {snippet}");
+                }
+                println!("insertion: {}", result.insertion_reason);
+                if let Some(transcript) = &result.transcript {
+                    println!("final: {}", transcript.text);
+                }
             }
             Event::Error { error, .. } => {
                 recording = false;

@@ -219,6 +219,45 @@ pub struct DictationResult {
     pub insertion_reason: String,
 }
 
+/// Metadata-only dictation outcome for broadcast events. Transcript text is omitted
+/// unless explicitly enabled via privacy config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct PublicDictationResult {
+    pub job_id: JobId,
+    pub total_ms: u64,
+    pub copied_to_clipboard: bool,
+    pub paste_attempted: bool,
+    pub paste_succeeded: bool,
+    pub clipboard_restored: bool,
+    pub cleanup_used: bool,
+    pub cleanup_failed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_used: Option<String>,
+    pub insertion_reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transcript: Option<Transcript>,
+}
+
+impl PublicDictationResult {
+    #[must_use]
+    pub fn from_result(result: &DictationResult, include_transcript: bool) -> Self {
+        Self {
+            job_id: result.job_id.clone(),
+            total_ms: result.total_ms,
+            copied_to_clipboard: result.copied_to_clipboard,
+            paste_attempted: result.paste_attempted,
+            paste_succeeded: result.paste_succeeded,
+            clipboard_restored: result.clipboard_restored,
+            cleanup_used: result.cleanup_used,
+            cleanup_failed: result.cleanup_failed,
+            snippet_used: result.snippet_used.clone(),
+            insertion_reason: result.insertion_reason.clone(),
+            transcript: include_transcript.then(|| result.transcript.clone()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum JobState {
@@ -289,7 +328,7 @@ pub enum Event {
     Result {
         protocol_version: u32,
         timestamp_ms: u64,
-        result: DictationResult,
+        result: PublicDictationResult,
     },
     Preview {
         protocol_version: u32,
@@ -330,5 +369,37 @@ mod tests {
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"cmd\":\"toggle\""));
         assert!(json.contains("\"snippet\":\"signature\""));
+    }
+
+    #[test]
+    fn public_dictation_result_omits_transcript_by_default() {
+        let result = DictationResult {
+            job_id: JobId::new(),
+            transcript: Transcript {
+                text: "secret dictated text".into(),
+                language: None,
+                duration_ms: None,
+                segments: vec![],
+            },
+            benchmark: AsrBenchmark {
+                model_load_ms: 0,
+                transcribe_ms: 0,
+                audio_duration_ms: 0,
+            },
+            total_ms: 42,
+            copied_to_clipboard: true,
+            pasted: false,
+            paste_attempted: false,
+            paste_succeeded: false,
+            clipboard_restored: false,
+            cleanup_used: false,
+            cleanup_failed: false,
+            snippet_used: None,
+            insertion_reason: "clipboard_only".into(),
+        };
+        let public = PublicDictationResult::from_result(&result, false);
+        let json = serde_json::to_string(&public).unwrap();
+        assert!(!json.contains("transcript"));
+        assert!(!json.contains("secret dictated text"));
     }
 }
