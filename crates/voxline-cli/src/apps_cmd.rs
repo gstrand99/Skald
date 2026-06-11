@@ -23,7 +23,7 @@ pub enum AppsCommands {
 }
 
 fn detect() -> Result<()> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     apps::ensure_default_app_profiles(&config.paths).context("failed to ensure app profiles")?;
     let target = capture_active_target();
     let report = if let Some(target) = &target {
@@ -48,7 +48,7 @@ fn detect() -> Result<()> {
 }
 
 fn list() -> Result<()> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     apps::ensure_default_app_profiles(&config.paths).context("failed to ensure app profiles")?;
     let profiles = apps::list_app_profiles(&config.paths).context("failed to list app profiles")?;
     if profiles.is_empty() {
@@ -67,7 +67,7 @@ fn list() -> Result<()> {
 }
 
 fn edit(name: &str) -> Result<()> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     let path = apps::edit_app_profile(&config.paths, name).context("failed to edit app profile")?;
     println!("Updated {}", path.display());
     Ok(())

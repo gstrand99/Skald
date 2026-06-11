@@ -80,6 +80,25 @@ pub async fn connect_socket(path: &Path) -> Result<UnixStream> {
         .with_context(|| format!("cannot connect to {}; is voxlined running?", path.display()))
 }
 
+pub async fn request(path: &Path, command: Command) -> Result<Response> {
+    let stream = connect_socket(path).await?;
+    let (reader, mut writer) = stream.into_split();
+    let request = Request {
+        protocol_version: PROTOCOL_VERSION,
+        request_id: Ulid::new().to_string(),
+        command,
+    };
+    write_request(&mut writer, &request).await?;
+    let mut lines = BufReader::new(reader).lines();
+    let line = lines
+        .next_line()
+        .await?
+        .context("daemon closed without a response")?;
+    let response: Response = serde_json::from_str(&line)?;
+    ensure_supported_protocol_version(response.protocol_version)?;
+    Ok(response)
+}
+
 pub async fn subscribe(path: &Path, events: Vec<EventKind>) -> Result<(Response, OwnedReadHalf)> {
     let stream = connect_socket(path).await?;
     let (reader, mut writer) = stream.into_split();
