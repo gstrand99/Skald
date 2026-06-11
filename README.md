@@ -97,6 +97,16 @@ voxline apps edit terminal
 voxline apps validate
 ```
 
+Insert snippets under `snippets/` store reusable static text (no cleanup or LLM):
+
+```bash
+voxline snippets list
+voxline snippets new signature
+voxline snippets validate
+voxline snippets insert signature
+voxline toggle --snippet signature
+```
+
 **`[secrets]`** — Where to look for API keys. Keys are never stored in
 `config.toml`. Use `voxline secrets set openrouter` (keyring), or set
 `OPENROUTER_API_KEY`, or opt into the insecure file fallback explicitly.

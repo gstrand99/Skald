@@ -33,6 +33,11 @@ pub enum Command {
         cleanup: Option<CleanupOverride>,
         #[serde(default)]
         style: Option<String>,
+        #[serde(default)]
+        snippet: Option<String>,
+    },
+    InsertSnippet {
+        name: String,
     },
     Start,
     Stop,
@@ -162,6 +167,8 @@ pub struct DictationResult {
     pub clipboard_restored: bool,
     pub cleanup_used: bool,
     pub cleanup_failed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet_used: Option<String>,
     pub insertion_reason: String,
 }
 
@@ -252,5 +259,21 @@ mod tests {
         };
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"cmd\":\"status\""));
+    }
+
+    #[test]
+    fn serializes_toggle_with_snippet() {
+        let request = Request {
+            protocol_version: 1,
+            request_id: "r2".into(),
+            command: Command::Toggle {
+                cleanup: None,
+                style: None,
+                snippet: Some("signature".into()),
+            },
+        };
+        let json = serde_json::to_string(&request).unwrap();
+        assert!(json.contains("\"cmd\":\"toggle\""));
+        assert!(json.contains("\"snippet\":\"signature\""));
     }
 }
