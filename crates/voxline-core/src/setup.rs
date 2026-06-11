@@ -1,10 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{Config, PathsConfig},
-    paths::{expand_home, resolve_model_dir, scaffold_config_layout},
+    paths::{expand_home, resolve_model_dir, scaffold_config_layout, to_tilde},
 };
 
 const SETUP_MARKER: &str = "setup-complete.json";
@@ -75,31 +75,13 @@ fn chrono_lite_now() -> String {
     format!("unix:{secs}")
 }
 
-fn path_to_tilde(path: &Path, model_dir: &Path, model_dir_tilde: &str) -> String {
-    if let Ok(relative) = path.strip_prefix(model_dir)
-        && let Some(file_name) = relative.file_name()
-    {
-        return format!(
-            "{}/{}",
-            model_dir_tilde.trim_end_matches('/'),
-            file_name.to_string_lossy()
-        );
-    }
-    if let Some(home) = dirs::home_dir()
-        && let Ok(relative) = path.strip_prefix(home)
-    {
-        return format!("~/{}", relative.display()).replace('\\', "/");
-    }
-    path.display().to_string()
-}
-
 impl Config {
     pub fn from_setup_selection(
         mut config: Config,
         selection: &SetupSelection,
     ) -> Result<Self, crate::config::ConfigError> {
         let model_dir = resolve_model_dir(&config.paths);
-        config.asr.model_path = path_to_tilde(
+        config.asr.model_path = to_tilde(
             &selection.asr_model_path,
             &model_dir,
             &config.paths.model_dir,
@@ -115,7 +97,7 @@ impl Config {
         config.asr.lifecycle.idle_unload_seconds = selection.idle_unload_seconds;
         config.preview.enabled = selection.preview_enabled;
         if let Some(path) = &selection.preview_model_path {
-            config.preview.model_path = path_to_tilde(path, &model_dir, &config.paths.model_dir);
+            config.preview.model_path = to_tilde(path, &model_dir, &config.paths.model_dir);
         }
         config.preview.gpu = selection.preview_gpu;
         config.cleanup.enabled = selection.cleanup_enabled;

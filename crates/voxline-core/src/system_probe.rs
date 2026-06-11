@@ -1,5 +1,9 @@
-use std::{path::Path, process::Command};
+use std::{
+    path::{Path, PathBuf},
+    process::Command,
+};
 
+use rustix::fs::statvfs;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -31,14 +35,15 @@ pub struct DependencyReport {
 
 #[must_use]
 pub fn probe_system(model_dir: &Path) -> SystemProfile {
+    let nvidia = nvidia_gpu_info();
     SystemProfile {
         cpu_logical_cores: std::thread::available_parallelism()
             .map(std::num::NonZero::get)
             .unwrap_or(4),
         ram_total_mib: read_ram_total_mib(),
-        has_nvidia_gpu: nvidia_gpu_info().is_some(),
-        gpu_name: nvidia_gpu_info().map(|(name, _)| name),
-        gpu_vram_mib: nvidia_gpu_info().map(|(_, vram)| vram),
+        has_nvidia_gpu: nvidia.is_some(),
+        gpu_name: nvidia.as_ref().map(|(name, _)| name.clone()),
+        gpu_vram_mib: nvidia.map(|(_, vram)| vram),
         model_dir_free_mib: free_space_mib(model_dir),
         distro_id: read_distro_id(),
         audio_stack_available: command_exists("pw-cli") || command_exists("pactl"),
@@ -174,22 +179,22 @@ fn read_ram_total_mib() -> u64 {
     0
 }
 
+fn nearest_existing_path(path: &Path) -> Option<PathBuf> {
+    let mut current = path;
+    loop {
+        if current.exists() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+}
+
 fn free_space_mib(path: &Path) -> Option<u64> {
-    let path = if path.exists() {
-        path.to_path_buf()
-    } else {
-        path.parent()?.to_path_buf()
-    };
-    let stat = std::fs::metadata(&path).ok()?;
-    let _ = stat;
-    let output = Command::new("df")
-        .args(["-Pm", path.to_str()?])
-        .output()
-        .ok()?;
-    let text = String::from_utf8(output.stdout).ok()?;
-    let line = text.lines().nth(1)?;
-    let available = line.split_whitespace().nth(3)?;
-    available.parse::<u64>().ok()
+    let path = nearest_existing_path(path)?;
+    let stat = statvfs(path.as_os_str()).ok()?;
+    // POSIX: f_bavail counts fragments of size f_frsize, not f_bsize.
+    let free_bytes = stat.f_frsize * stat.f_bavail;
+    Some(free_bytes / (1024 * 1024))
 }
 
 fn nvidia_gpu_info() -> Option<(String, u64)> {
@@ -235,5 +240,18 @@ mod tests {
                 .iter()
                 .any(|check| check.name.contains("PipeWire"))
         );
+    }
+
+    #[test]
+    fn free_space_mib_reports_root_filesystem() {
+        let free = free_space_mib(Path::new("/"));
+        assert!(free.is_some_and(|mib| mib > 0));
+    }
+
+    #[test]
+    fn free_space_mib_walks_to_existing_ancestor() {
+        let deep = Path::new("/definitely-not-a-real-voxline-path/deep/nested");
+        let free = free_space_mib(deep);
+        assert!(free.is_some_and(|mib| mib > 0));
     }
 }
