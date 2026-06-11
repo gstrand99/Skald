@@ -1,3 +1,4 @@
+mod apps_cmd;
 mod cleanup_cmd;
 mod secrets_cmd;
 mod service;
@@ -13,6 +14,7 @@ use tokio::{
     net::UnixStream,
 };
 use voxline_core::{
+    apps,
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
     config::Config,
     paths,
@@ -104,6 +106,10 @@ enum Commands {
     Styles {
         #[command(subcommand)]
         command: styles_cmd::StylesCommands,
+    },
+    Apps {
+        #[command(subcommand)]
+        command: apps_cmd::AppsCommands,
     },
 }
 
@@ -209,6 +215,7 @@ struct DoctorReport {
     cleanup_warning: Option<String>,
     config_layout_ready: bool,
     style_issues: Vec<String>,
+    app_issues: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -305,6 +312,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Styles { command } => styles_cmd::run(command)?,
+        Commands::Apps { command } => apps_cmd::run(command)?,
     }
     Ok(())
 }
@@ -565,6 +573,10 @@ async fn doctor(json: bool) -> Result<()> {
             .into_iter()
             .map(|issue| format!("{}: {}", issue.style, issue.message))
             .collect(),
+        app_issues: apps::validate_installed_app_profiles(&config.paths)
+            .into_iter()
+            .map(|issue| format!("{}: {}", issue.app, issue.message))
+            .collect(),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -652,6 +664,13 @@ fn print_doctor(report: &DoctorReport) {
     } else {
         for issue in &report.style_issues {
             println!("  style issue: {issue}");
+        }
+    }
+    if report.app_issues.is_empty() {
+        println!("  app profiles: valid");
+    } else {
+        for issue in &report.app_issues {
+            println!("  app profile issue: {issue}");
         }
     }
     println!("Cleanup:");
