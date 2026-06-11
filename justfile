@@ -39,6 +39,10 @@ status: build
 watch: build
     target/debug/voxline watch
 
+# Launch the preview overlay (requires preview.enabled and a graphical session).
+overlay: build
+    target/debug/voxline-overlay
+
 # Verify clipboard write/read/restore through the daemon.
 test-clipboard: build
     target/debug/voxline test clipboard

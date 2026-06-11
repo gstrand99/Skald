@@ -3,6 +3,7 @@ members = [
     "crates/voxline-core",
     "crates/voxlined",
     "crates/voxline-cli",
+    "crates/voxline-overlay",
     "crates/voxline-platform",
 ]
 resolver = "2"

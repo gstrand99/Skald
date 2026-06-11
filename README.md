@@ -145,9 +145,27 @@ pasted.
 ```bash
 # download ggml-small.en.bin to ~/.local/share/voxline/models/
 # set preview.enabled = true in config.toml
-voxline watch
+voxline watch          # terminal fallback
+voxline overlay        # graphical overlay (separate process)
 voxline toggle
 ```
+
+**Overlay (M11)** — `voxline-overlay` subscribes to daemon preview events and
+renders stable/provisional text in a small overlay window. It is a separate
+process and cannot block the daemon. Closing the overlay does not stop an active
+recording.
+
+| Session | Overlay behavior |
+|---------|------------------|
+| Hyprland / X11 | `overlay.anchor = "auto"` places preview near the cursor (above or below by available space) |
+| Hyprland / Sway / River | `top` / `bottom` use a full-width layer-shell bar |
+| GNOME Wayland | floating window; positioning is limited |
+| Headless / SSH | use `voxline watch` instead |
+
+On GNOME Wayland, Mutter does not implement `wlr-layer-shell`, so VoxLine cannot
+anchor a compositor overlay the way it does on Hyprland or Sway. The overlay
+falls back to a normal GTK window. For a universal text-only fallback, use
+`voxline watch`.
 
 ### Secrets and cleanup
 

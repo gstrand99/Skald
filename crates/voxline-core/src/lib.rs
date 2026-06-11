@@ -1,5 +1,6 @@
 pub mod apps;
 pub mod cleanup;
+pub mod client;
 pub mod commands;
 pub mod config;
 pub mod paths;

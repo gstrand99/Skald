@@ -154,3 +154,11 @@ ring_buffer_seconds = 30
 model_path = "~/.local/share/voxline/models/ggml-small.en.bin"
 gpu = false
 threads = 0
+
+[overlay]
+margin_px = 16
+max_width_px = 720
+# top | bottom | auto (near cursor on Hyprland/X11)
+anchor = "auto"
+use_layer_shell = true
+hide_when_idle = true
