@@ -25,6 +25,7 @@ tracing-subscriber.workspace = true
 voxline-core = { path = "../voxline-core" }
 voxline-platform = { path = "../voxline-platform" }
 whisper-rs = "0.16"
+rubato = "3.0.0"
 
 [lints]
 workspace = true

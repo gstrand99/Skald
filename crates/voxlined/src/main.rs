@@ -845,9 +845,16 @@ async fn finish_dictation(
     retain_audio_file: bool,
 ) -> Response {
     let _audio_cleanup = TemporaryAudio::new(
+        recording.job_id.clone(),
         recording.wav_path.clone(),
         state.privacy.store_audio || retain_audio_file,
     );
+    if recording.truncated && state.notifications.enabled {
+        voxline_platform::notify(
+            "VoxLine",
+            "Recording stopped at the configured maximum length",
+        );
+    }
     if !recording.speech_detected {
         if state.notifications.enabled && state.audio_gates.notify_on_no_speech {
             voxline_platform::notify("VoxLine", "No speech detected");
@@ -1899,13 +1906,18 @@ async fn test_paste(request_id: String, state: &AppState) -> Response {
 }
 
 struct TemporaryAudio {
+    job_id: JobId,
     path: std::path::PathBuf,
     retain: bool,
 }
 
 impl TemporaryAudio {
-    fn new(path: std::path::PathBuf, retain: bool) -> Self {
-        Self { path, retain }
+    fn new(job_id: JobId, path: std::path::PathBuf, retain: bool) -> Self {
+        Self {
+            job_id,
+            path,
+            retain,
+        }
     }
 }
 
@@ -1917,7 +1929,11 @@ impl Drop for TemporaryAudio {
         if let Err(error) = fs::remove_file(&self.path)
             && error.kind() != std::io::ErrorKind::NotFound
         {
-            warn!(path = %self.path.display(), %error, "failed to delete temporary audio");
+            warn!(
+                job_id = %self.job_id.0,
+                kind = ?error.kind(),
+                "failed to delete temporary audio"
+            );
         }
     }
 }
@@ -1986,6 +2002,9 @@ async fn audio_error_response(
     state: &AppState,
     error: audio::AudioError,
 ) -> Response {
+    if state.notifications.enabled && matches!(&error, audio::AudioError::StreamFailed { .. }) {
+        voxline_platform::notify("VoxLine", "Recording failed: audio stream error");
+    }
     emit_error(state, None, "audio_error", &error.to_string());
     let status = update_state(state, None, JobState::Idle).await;
     error_response(request_id, "audio_error", &error.to_string(), Some(status))
