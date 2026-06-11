@@ -1,0 +1,9 @@
+name = "terminal"
+default_style = "default"
+match_process = ["alacritty", "kitty", "wezterm", "gnome-terminal", "foot", "ghostty", "konsole"]
+
+[cleanup]
+enabled = false
+
+[injection]
+prefer_clipboard_only = true

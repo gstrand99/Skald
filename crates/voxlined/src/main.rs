@@ -53,6 +53,7 @@ struct AppState {
     target_at_start: Mutex<Option<voxline_platform::TargetContext>>,
     cleanup_override: Mutex<Option<CleanupOverride>>,
     style_override: Mutex<Option<String>>,
+    active_app_profile: Mutex<Option<voxline_core::apps::AppProfile>>,
 }
 
 #[tokio::main]
@@ -97,6 +98,7 @@ async fn main() -> Result<()> {
         target_at_start: Mutex::new(None),
         cleanup_override: Mutex::new(None),
         style_override: Mutex::new(None),
+        active_app_profile: Mutex::new(None),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -433,7 +435,18 @@ async fn start(
     let job_id = JobId::new();
     *state.cleanup_override.lock().await = cleanup;
     *state.style_override.lock().await = style;
-    *state.target_at_start.lock().await = voxline_platform::capture_active_target();
+    let target_at_start = voxline_platform::capture_active_target();
+    let active_app_profile = Config::load_or_default().ok().and_then(|config| {
+        target_at_start.as_ref().and_then(|target| {
+            voxline_core::apps::match_app_profile(
+                &config.paths,
+                target.app_id.as_deref(),
+                target.title.as_deref(),
+            )
+        })
+    });
+    *state.target_at_start.lock().await = target_at_start;
+    *state.active_app_profile.lock().await = active_app_profile;
     match state.audio.start(job_id.clone()).await {
         Ok(()) => {
             let status = update_state(state, Some(job_id), JobState::Recording).await;
@@ -521,14 +534,18 @@ async fn finish_dictation(
 
     let cleanup_override = state.cleanup_override.lock().await.take();
     let style_override = state.style_override.lock().await.take();
+    let active_app_profile = state.active_app_profile.lock().await.take();
     let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
-    let style_name = voxline_core::styles::resolve_style_name(
+    let routing = voxline_core::routing::resolve_cleanup_routing(
         style_override.as_deref(),
+        cleanup_override,
+        cleanup_enabled,
         &cleanup_config.default_style,
+        active_app_profile.as_ref(),
     );
     let raw_text = transcript.text.clone();
     let cleanup_outcome = if should_run_cleanup(
-        cleanup_enabled,
+        routing.cleanup_enabled,
         cleanup_override,
         &raw_text,
         cleanup_config.skip_if_word_count_below,
@@ -538,7 +555,8 @@ async fn finish_dictation(
             &cleanup_config,
             &paths_config,
             &secrets_config,
-            &style_name,
+            &routing.style_name,
+            routing.app_prompt.as_deref(),
             &raw_text,
         )
         .await
@@ -583,7 +601,14 @@ async fn finish_dictation(
         }
     };
     let paste_outcome = if copied_to_clipboard {
-        insert_if_safe(state, &recording.job_id, target_at_stop, started).await
+        insert_if_safe(
+            state,
+            &recording.job_id,
+            target_at_stop,
+            started,
+            routing.prefer_clipboard_only,
+        )
+        .await
     } else {
         injection::PasteOutcome::disabled("clipboard output is disabled")
     };
@@ -657,12 +682,19 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
         )
         .await;
     }
-    let style_name = voxline_core::styles::resolve_style_name(None, &cleanup_config.default_style);
+    let routing = voxline_core::routing::resolve_cleanup_routing(
+        None,
+        None,
+        cleanup_config.enabled,
+        &cleanup_config.default_style,
+        None,
+    );
     match cleanup::run_cleanup(
         &cleanup_config,
         &paths_config,
         &secrets_config,
-        &style_name,
+        &routing.style_name,
+        routing.app_prompt.as_deref(),
         "VoxLine OpenRouter test",
     )
     .await
@@ -711,13 +743,19 @@ async fn cleanup_preview(
         )
         .await;
     }
-    let style_name =
-        voxline_core::styles::resolve_style_name(style.as_deref(), &cleanup_config.default_style);
+    let routing = voxline_core::routing::resolve_cleanup_routing(
+        style.as_deref(),
+        None,
+        cleanup_enabled,
+        &cleanup_config.default_style,
+        None,
+    );
     match cleanup::run_cleanup(
         &cleanup_config,
         &paths_config,
         &secrets_config,
-        &style_name,
+        &routing.style_name,
+        routing.app_prompt.as_deref(),
         &text,
     )
     .await
@@ -770,7 +808,18 @@ async fn insert_if_safe(
     job_id: &JobId,
     target_at_stop: Option<voxline_platform::TargetContext>,
     started: Instant,
+    prefer_clipboard_only: bool,
 ) -> injection::PasteOutcome {
+    if prefer_clipboard_only {
+        return handle_clipboard_fallback(
+            state,
+            job_id,
+            injection::PasteOutcome::clipboard_only(
+                "application profile prefers clipboard-only output",
+                "paste_profile_clipboard_only",
+            ),
+        );
+    }
     let target_at_start = state.target_at_start.lock().await.take();
     let target_before_paste = voxline_platform::capture_active_target();
     let paste_backend = voxline_platform::paste_backend();

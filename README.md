@@ -86,6 +86,17 @@ voxline cleanup preview --style professional "hey john thanks"
 voxline toggle --style professional --cleanup
 ```
 
+Application profiles under `apps/` match the active window at recording start and
+can override cleanup style, disable cleanup, add a prompt layer, or prefer
+clipboard-only paste (the bundled `terminal` profile does the latter two):
+
+```bash
+voxline apps detect
+voxline apps list
+voxline apps edit terminal
+voxline apps validate
+```
+
 **`[secrets]`** — Where to look for API keys. Keys are never stored in
 `config.toml`. Use `voxline secrets set openrouter` (keyring), or set
 `OPENROUTER_API_KEY`, or opt into the insecure file fallback explicitly.
