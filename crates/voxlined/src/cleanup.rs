@@ -40,6 +40,7 @@ pub async fn run_cleanup(
     cleanup: &CleanupConfig,
     paths: &PathsConfig,
     secrets_config: &SecretsConfig,
+    style_name: &str,
     input: &str,
 ) -> Result<CleanupOutcome, CleanupError> {
     let started = Instant::now();
@@ -52,7 +53,7 @@ pub async fn run_cleanup(
     } else {
         cleanup.model.as_str()
     };
-    let system_prompt = styles::load_style_prompt(paths, &cleanup.default_style)?;
+    let system_prompt = styles::load_style_prompt(paths, style_name)?;
     let cleaned = request_openrouter(
         &api_key,
         model,

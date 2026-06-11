@@ -64,8 +64,18 @@ service-stop: build-cuda
     target/debug/voxline service stop
 
 # Preview OpenRouter cleanup for sample text.
-cleanup-preview text: build
-    target/debug/voxline cleanup preview "{{text}}"
+cleanup-preview text style="": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ -n "{{style}}" ]]; then
+        target/debug/voxline cleanup preview --style "{{style}}" "{{text}}"
+    else
+        target/debug/voxline cleanup preview "{{text}}"
+    fi
+
+# List configured cleanup styles.
+styles-list: build
+    target/debug/voxline styles list
 
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build

@@ -1,6 +1,7 @@
 mod cleanup_cmd;
 mod secrets_cmd;
 mod service;
+mod styles_cmd;
 
 use std::time::Duration;
 
@@ -17,7 +18,7 @@ use voxline_core::{
     paths,
     protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
     runtime::{runtime_dir_for, socket_path_for, verify_mode},
-    secrets,
+    secrets, styles,
 };
 use voxline_platform::{
     SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance,
@@ -42,6 +43,8 @@ enum Commands {
         cleanup: bool,
         #[arg(long)]
         no_cleanup: bool,
+        #[arg(long)]
+        style: Option<String>,
     },
     Start,
     #[command(name = "ptt-start")]
@@ -98,13 +101,23 @@ enum Commands {
         #[command(subcommand)]
         command: CleanupCommands,
     },
+    Styles {
+        #[command(subcommand)]
+        command: styles_cmd::StylesCommands,
+    },
 }
 
 #[derive(Debug, Subcommand)]
 enum CleanupCommands {
-    Enable { provider: String },
+    Enable {
+        provider: String,
+    },
     Disable,
-    Preview { text: String },
+    Preview {
+        text: String,
+        #[arg(long)]
+        style: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -195,6 +208,7 @@ struct DoctorReport {
     cleanup_provider: String,
     cleanup_warning: Option<String>,
     config_layout_ready: bool,
+    style_issues: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -224,9 +238,11 @@ async fn main() -> Result<()> {
         Commands::Toggle {
             cleanup,
             no_cleanup,
+            style,
         } => print_response(
             &send(Command::Toggle {
                 cleanup: cleanup_override(cleanup, no_cleanup)?,
+                style,
             })
             .await?,
         ),
@@ -284,10 +300,11 @@ async fn main() -> Result<()> {
         Commands::Cleanup { command } => match command {
             CleanupCommands::Enable { provider } => cleanup_cmd::enable(&provider)?,
             CleanupCommands::Disable => cleanup_cmd::disable()?,
-            CleanupCommands::Preview { text } => {
-                print_cleanup_response(&send(Command::CleanupPreview { text }).await?);
+            CleanupCommands::Preview { text, style } => {
+                print_cleanup_response(&send(Command::CleanupPreview { text, style }).await?);
             }
         },
+        Commands::Styles { command } => styles_cmd::run(command)?,
     }
     Ok(())
 }
@@ -348,14 +365,22 @@ fn cleanup_override(cleanup: bool, no_cleanup: bool) -> Result<Option<CleanupOve
 }
 
 async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
-    let started = send(Command::Toggle { cleanup }).await?;
+    let started = send(Command::Toggle {
+        cleanup,
+        style: None,
+    })
+    .await?;
     if !started.ok {
         print_response(&started);
         bail!("recording did not start");
     }
     println!("Recording for {seconds} seconds...");
     tokio::time::sleep(Duration::from_secs(seconds)).await;
-    let stopped = send(Command::Toggle { cleanup: None }).await?;
+    let stopped = send(Command::Toggle {
+        cleanup: None,
+        style: None,
+    })
+    .await?;
     print_response(&stopped);
     if !stopped.ok {
         bail!("recording did not stop cleanly");
@@ -536,6 +561,10 @@ async fn doctor(json: bool) -> Result<()> {
         cleanup_provider: config.cleanup.provider.clone(),
         cleanup_warning,
         config_layout_ready: paths::layout_is_scaffolded(&config.paths),
+        style_issues: styles::validate_installed_styles(&config.paths)
+            .into_iter()
+            .map(|issue| format!("{}: {}", issue.style, issue.message))
+            .collect(),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -618,6 +647,13 @@ fn print_doctor(report: &DoctorReport) {
         "  styles/apps/snippets dirs: {}",
         yes_no(report.config_layout_ready)
     );
+    if report.style_issues.is_empty() {
+        println!("  cleanup styles: valid");
+    } else {
+        for issue in &report.style_issues {
+            println!("  style issue: {issue}");
+        }
+    }
     println!("Cleanup:");
     println!("  Provider: {}", report.cleanup_provider);
     println!("  Enabled: {}", yes_no(report.privacy.cleanup_enabled));
