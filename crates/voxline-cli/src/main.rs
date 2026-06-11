@@ -64,6 +64,7 @@ enum Commands {
     PttStop,
     Cancel,
     Watch,
+    Overlay,
     Transcribe {
         audio_file: std::path::PathBuf,
         #[arg(long)]
@@ -287,6 +288,7 @@ async fn main() -> Result<()> {
         Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?),
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
         Commands::Watch => watch().await?,
+        Commands::Overlay => run_overlay()?,
         Commands::Transcribe {
             audio_file,
             no_cleanup: _,
@@ -623,6 +625,25 @@ impl PreviewDisplay {
         }
         print!("{line}");
         std::io::stdout().flush().ok();
+    }
+}
+
+fn run_overlay() -> Result<()> {
+    let overlay = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .map(|dir| dir.join("voxline-overlay"))
+                .filter(|candidate| candidate.is_file())
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("voxline-overlay"));
+    let status = std::process::Command::new(overlay)
+        .status()
+        .context("failed to launch voxline-overlay")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("voxline-overlay exited with {status}");
     }
 }
 
