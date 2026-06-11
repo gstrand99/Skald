@@ -137,9 +137,54 @@ bench-model-load: build
 build-cuda:
     cargo build -p voxlined --no-default-features --features asr-whisper-rs-cuda
 
+# Optimized release builds for local installation.
+release:
+    cargo build --workspace --release
+
+# CUDA release build for the power-user profile (voxlined + CLI + overlay).
+release-cuda:
+    cargo build -p voxlined --release --no-default-features --features asr-whisper-rs-cuda
+    cargo build -p voxline-cli -p voxline-overlay --release
+
+# Print transcribe-path benchmark timings for a WAV file.
+bench-e2e wav: build
+    target/debug/voxline bench end-to-end {{wav}}
+
+# Full dictation-path benchmark (ASR + optional cleanup + clipboard).
+bench-dictation wav *flags="": build
+    target/debug/voxline bench dictation {{wav}} {{flags}}
+
+# Install release binaries to ~/.local/bin (user-local).
+install: release
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dest="${HOME}/.local/bin"
+    mkdir -p "${dest}"
+    install -m 0755 target/release/voxline target/release/voxlined target/release/voxline-overlay "${dest}/"
+    echo "Installed to ${dest}"
+    if [[ "${VOXLINE_SKIP_SETUP:-}" != "1" ]]; then
+        target/release/voxline setup --if-missing || true
+    fi
+
+# Run the interactive first-time setup wizard.
+setup:
+    cargo run -p voxline-cli -- setup
+
 # Create the default config tree and config.toml.
 config-init:
     cargo run -p voxline-cli -- config init
+
+# Run the Starlight docs dev server (https://docs.voxline.dev).
+docs-dev:
+    cd docs && bun run dev
+
+# Build the static docs site to docs/dist/.
+docs-build:
+    cd docs && bun run build
+
+# Build and deploy docs to Cloudflare Workers (docs.voxline.dev).
+docs-deploy:
+    cd docs && bun run deploy
 
 # Run formatting, linting, and tests.
 check:

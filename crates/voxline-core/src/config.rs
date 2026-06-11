@@ -305,6 +305,17 @@ pub struct PrivacyConfig {
     pub log_transcripts: bool,
 }
 
+impl PrivacyConfig {
+    #[must_use]
+    pub fn sensitive_storage_or_logging_enabled(&self) -> bool {
+        self.store_history
+            || self.store_audio
+            || self.store_raw_transcript
+            || self.store_cleaned_transcript
+            || self.log_transcripts
+    }
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -714,6 +725,7 @@ mod tests {
         assert!(!config.cleanup.enabled);
         assert!(!config.privacy.store_audio);
         assert!(!config.privacy.log_transcripts);
+        assert!(!config.privacy.sensitive_storage_or_logging_enabled());
     }
 
     #[test]

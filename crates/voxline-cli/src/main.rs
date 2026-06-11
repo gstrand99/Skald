@@ -3,6 +3,7 @@ mod cleanup_cmd;
 mod commands_cmd;
 mod secrets_cmd;
 mod service;
+mod setup_cmd;
 mod snippets_cmd;
 mod styles_cmd;
 
@@ -25,7 +26,7 @@ use voxline_core::{
         Command, Event, EventKind, JobState, PROTOCOL_VERSION, Request, Response,
         SessionEnvironment,
     },
-    runtime::{runtime_dir_for, socket_path_for, verify_mode},
+    runtime::{runtime_dir_for, socket_path_for, socket_permissions_ok, verify_mode},
     secrets, snippets, styles,
 };
 use voxline_platform::{
@@ -96,6 +97,18 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    Setup {
+        #[arg(long)]
+        if_missing: bool,
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        non_interactive: bool,
+        #[arg(long)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<SetupSubcommands>,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
@@ -128,6 +141,15 @@ enum Commands {
     Routing {
         #[command(subcommand)]
         command: commands_cmd::CommandsCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SetupSubcommands {
+    /// Record the setup benchmark fixture without running the full wizard.
+    Record {
+        #[arg(long, default_value_t = 10)]
+        seconds: u64,
     },
 }
 
@@ -187,7 +209,25 @@ enum AsrCommands {
 
 #[derive(Debug, Subcommand)]
 enum BenchCommands {
-    Asr { audio_file: std::path::PathBuf },
+    Asr {
+        audio_file: std::path::PathBuf,
+    },
+    EndToEnd {
+        audio_file: std::path::PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    Dictation {
+        audio_file: std::path::PathBuf,
+        #[arg(long, group = "cleanup_mode")]
+        cleanup: bool,
+        #[arg(long, group = "cleanup_mode")]
+        no_cleanup: bool,
+        #[arg(long)]
+        paste: bool,
+        #[arg(long)]
+        json: bool,
+    },
     ModelLoad,
 }
 
@@ -218,7 +258,9 @@ struct DoctorReport {
     runtime_dir: Option<String>,
     runtime_secure: bool,
     socket_path: Option<String>,
+    socket_secure: bool,
     daemon_reachable: bool,
+    overlay_session: String,
     trigger_mode: &'static str,
     recommended_command: &'static str,
     push_to_talk_note: String,
@@ -238,6 +280,7 @@ struct DoctorReport {
     snippet_issues: Vec<String>,
     voice_command_conflicts: Vec<String>,
     voice_commands_enabled: bool,
+    suggestions: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -260,10 +303,12 @@ struct PreviewReport {
 #[allow(clippy::struct_excessive_bools)]
 struct PrivacyReport {
     cleanup_enabled: bool,
+    store_history: bool,
     store_audio: bool,
     store_raw_transcript: bool,
     store_cleaned_transcript: bool,
     log_transcripts: bool,
+    sensitive_options_enabled: bool,
 }
 
 #[tokio::main]
@@ -307,18 +352,7 @@ async fn main() -> Result<()> {
             };
             print_response(&send(command).await?);
         }
-        Commands::Bench { command } => match command {
-            BenchCommands::Asr { audio_file } => print_response(
-                &send(Command::Transcribe {
-                    audio_path: audio_file,
-                })
-                .await?,
-            ),
-            BenchCommands::ModelLoad => {
-                let _ = send(Command::AsrUnload).await?;
-                print_response(&send(Command::AsrLoad).await?);
-            }
-        },
+        Commands::Bench { command } => handle_bench(command).await?,
         Commands::Vocab { command } => vocab(command)?,
         Commands::Record {
             seconds,
@@ -333,6 +367,24 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Doctor { json } => doctor(json).await?,
+        Commands::Setup {
+            if_missing,
+            force,
+            non_interactive,
+            json,
+            command,
+        } => match command {
+            Some(SetupSubcommands::Record { seconds }) => setup_cmd::run_record(seconds).await?,
+            None => {
+                setup_cmd::run(setup_cmd::SetupOptions {
+                    if_missing,
+                    force,
+                    non_interactive,
+                    json,
+                })
+                .await?;
+            }
+        },
         Commands::Config { command } => config(&command)?,
         Commands::Service { command } => service_command(&command)?,
         Commands::Secrets { command } => secrets_cmd::run(command)?,
@@ -473,7 +525,7 @@ fn config(command: &ConfigCommands) -> Result<()> {
     Ok(())
 }
 
-async fn send(command: Command) -> Result<Response> {
+pub(crate) async fn send(command: Command) -> Result<Response> {
     let socket = configured_socket_path()?;
     let stream = UnixStream::connect(&socket).await.with_context(|| {
         format!(
@@ -657,7 +709,7 @@ async fn write_request(
     Ok(())
 }
 
-fn print_response(response: &Response) {
+pub(crate) fn print_response(response: &Response) {
     println!(
         "{}",
         serde_json::to_string_pretty(&response).expect("response serializes")
@@ -688,16 +740,34 @@ fn preview_doctor_report(config: &Config) -> Option<PreviewReport> {
 
 async fn doctor(json: bool) -> Result<()> {
     let config = Config::load_or_default()?;
+    let mut report = build_doctor_report(&config).await?;
+    report.suggestions = build_doctor_suggestions(&report);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    print_doctor(&report);
+    if !report.config_valid {
+        bail!("configuration is invalid");
+    }
+    Ok(())
+}
+
+async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let config_valid = config.validate().is_ok();
     let runtime = runtime_dir_for(&config.paths).ok();
     let runtime_secure = runtime
         .as_deref()
         .is_some_and(|path| path.exists() && verify_mode(path).is_ok());
     let socket = socket_path_for(&config.paths).ok();
+    let socket_secure = socket
+        .as_ref()
+        .is_some_and(|path| path.exists() && socket_permissions_ok(path));
     let daemon_reachable = match &socket {
         Some(path) => UnixStream::connect(path).await.is_ok(),
         None => false,
     };
+    let overlay_hint = voxline_platform::overlay_session_hint();
     let cli_environment = voxline_platform::environment_report();
     let cli_snapshot = SessionEnvironmentSnapshot::from(&cli_environment);
     let daemon_environment = if daemon_reachable {
@@ -712,21 +782,23 @@ async fn doctor(json: bool) -> Result<()> {
     let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
     let trigger = trigger_guidance(session, desktop);
     let model_path = paths::expand_home(&config.asr.model_path);
-    let preview = preview_doctor_report(&config);
+    let preview = preview_doctor_report(config);
     let secret_status = secrets::secret_status(&config.secrets);
     let cleanup_warning = if config.cleanup.enabled {
         Some("Warning: transcript text is sent to the configured cleanup provider.".into())
     } else {
         None
     };
-    let report = DoctorReport {
+    Ok(DoctorReport {
         environment: cli_environment,
         config_path: Config::path()?.display().to_string(),
         config_valid,
         runtime_dir: runtime.as_ref().map(|path| path.display().to_string()),
         runtime_secure,
         socket_path: socket.as_ref().map(|path| path.display().to_string()),
+        socket_secure,
         daemon_reachable,
+        overlay_session: overlay_hint.id.into(),
         trigger_mode: "external shortcut",
         recommended_command: trigger.recommended_command,
         push_to_talk_note: trigger.push_to_talk_note.into(),
@@ -735,10 +807,12 @@ async fn doctor(json: bool) -> Result<()> {
         environment_mismatch,
         privacy: PrivacyReport {
             cleanup_enabled: config.cleanup.enabled,
+            store_history: config.privacy.store_history,
             store_audio: config.privacy.store_audio,
             store_raw_transcript: config.privacy.store_raw_transcript,
             store_cleaned_transcript: config.privacy.store_cleaned_transcript,
             log_transcripts: config.privacy.log_transcripts,
+            sensitive_options_enabled: config.privacy.sensitive_storage_or_logging_enabled(),
         },
         asr: AsrReport {
             backend: config.asr.backend.clone(),
@@ -774,16 +848,8 @@ async fn doctor(json: bool) -> Result<()> {
             })
             .unwrap_or_default(),
         voice_commands_enabled: config.voice_commands.enabled,
-    };
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
-    }
-    print_doctor(&report);
-    if !report.config_valid {
-        bail!("configuration is invalid");
-    }
-    Ok(())
+        suggestions: Vec::new(),
+    })
 }
 
 #[allow(clippy::too_many_lines)]
@@ -803,7 +869,9 @@ fn print_doctor(report: &DoctorReport) {
     );
     println!("Config valid: {}", yes_no(report.config_valid));
     println!("Runtime secure: {}", yes_no(report.runtime_secure));
+    println!("Socket secure: {}", yes_no(report.socket_secure));
     println!("Daemon reachable: {}", yes_no(report.daemon_reachable));
+    println!("Overlay session: {}", report.overlay_session);
     println!("Trigger mode: {}", report.trigger_mode);
     println!("Recommended command: {}", report.recommended_command);
     println!("Push-to-talk: {}", report.push_to_talk_note);
@@ -906,11 +974,23 @@ fn print_doctor(report: &DoctorReport) {
         "  Cleanup enabled: {}",
         yes_no(report.privacy.cleanup_enabled)
     );
+    println!("  Store history: {}", yes_no(report.privacy.store_history));
     println!("  Store audio: {}", yes_no(report.privacy.store_audio));
+    println!(
+        "  Store raw transcript: {}",
+        yes_no(report.privacy.store_raw_transcript)
+    );
+    println!(
+        "  Store cleaned transcript: {}",
+        yes_no(report.privacy.store_cleaned_transcript)
+    );
     println!(
         "  Log transcripts: {}",
         yes_no(report.privacy.log_transcripts)
     );
+    if report.privacy.sensitive_options_enabled {
+        println!("  Warning: a sensitive [privacy] option is enabled.");
+    }
     println!("ASR:");
     println!("  Backend: {}", report.asr.backend);
     println!("  Model: {}", report.asr.model_path);
@@ -938,6 +1018,181 @@ fn print_doctor(report: &DoctorReport) {
         yes_no(report.paste.paste_available)
     );
     println!("  Behavior: {}", report.paste.reason);
+    if !report.suggestions.is_empty() {
+        println!("Suggestions:");
+        for suggestion in &report.suggestions {
+            println!("  - {suggestion}");
+        }
+    }
+}
+
+fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
+    let mut suggestions = Vec::new();
+    let config = Config::load_or_default().ok();
+    if config
+        .as_ref()
+        .is_none_or(|config| voxline_core::setup::needs_setup(&config.paths))
+    {
+        suggestions.push("Run `voxline setup` to complete first-time installation.".into());
+    }
+    if !report.config_valid {
+        suggestions.push("Run `voxline config validate` and fix the reported errors.".into());
+    }
+    if !report.runtime_secure {
+        suggestions.push(
+            "Ensure the runtime directory exists with mode 0700 and is owned by your user.".into(),
+        );
+    }
+    if report.socket_path.is_some() && !report.socket_secure {
+        suggestions
+            .push("Restart voxlined so it recreates the daemon socket with mode 0600.".into());
+    }
+    if !report.daemon_reachable {
+        suggestions.push(
+            "Start the daemon with `voxline service start` or `voxlined --foreground`.".into(),
+        );
+    }
+    if !report.asr.model_exists {
+        suggestions.push("Download a GGML Whisper model to the configured asr.model_path.".into());
+    }
+    if let Some(preview) = &report.preview
+        && !preview.model_exists
+    {
+        suggestions.push(
+            "Download a small preview model or set preview.enabled = false in config.".into(),
+        );
+    }
+    if report.environment_mismatch.is_some() {
+        suggestions.push(
+            "Import your graphical session into systemd using the binding examples above.".into(),
+        );
+    }
+    if report.privacy.cleanup_enabled {
+        suggestions.push(
+            "Cleanup is enabled; transcript text is sent to your configured cloud provider.".into(),
+        );
+    }
+    if report.privacy.sensitive_options_enabled {
+        suggestions.push(
+            "Review [privacy] in config.toml; storage or transcript logging is enabled.".into(),
+        );
+    }
+    if report.cleanup_provider == "openrouter"
+        && report.privacy.cleanup_enabled
+        && !report.secrets.openrouter_configured
+    {
+        suggestions.push("Run `voxline secrets set openrouter` before using cleanup.".into());
+    }
+    suggestions
+}
+
+async fn handle_bench(command: BenchCommands) -> Result<()> {
+    match command {
+        BenchCommands::Asr { audio_file } => print_response(
+            &send(Command::Transcribe {
+                audio_path: audio_file,
+            })
+            .await?,
+        ),
+        BenchCommands::EndToEnd { audio_file, json } => {
+            bench_transcribe(
+                &send(Command::Transcribe {
+                    audio_path: audio_file,
+                })
+                .await?,
+                json,
+            )?;
+        }
+        BenchCommands::Dictation {
+            audio_file,
+            cleanup,
+            no_cleanup,
+            paste,
+            json,
+        } => {
+            let cleanup_override = if cleanup {
+                Some(voxline_core::cleanup::CleanupOverride::Force)
+            } else if no_cleanup {
+                Some(voxline_core::cleanup::CleanupOverride::Disable)
+            } else {
+                None
+            };
+            bench_dictation(
+                &send(Command::BenchDictation {
+                    audio_path: audio_file,
+                    cleanup: cleanup_override,
+                    attempt_paste: paste,
+                })
+                .await?,
+                json,
+            )?;
+        }
+        BenchCommands::ModelLoad => {
+            let _ = send(Command::AsrUnload).await?;
+            print_response(&send(Command::AsrLoad).await?);
+        }
+    }
+    Ok(())
+}
+
+fn bench_transcribe(response: &Response, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(response)?);
+        return Ok(());
+    }
+    if !response.ok {
+        print_response(response);
+        bail!("benchmark failed");
+    }
+    let Some(benchmark) = &response.benchmark else {
+        bail!("daemon response did not include benchmark timings");
+    };
+    println!("VoxLine benchmark (transcribe only)");
+    print_asr_benchmark(benchmark, response.cleanup_ms);
+    Ok(())
+}
+
+fn bench_dictation(response: &Response, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(response)?);
+        return Ok(());
+    }
+    if !response.ok {
+        print_response(response);
+        bail!("benchmark failed");
+    }
+    let Some(dictation) = &response.dictation else {
+        bail!("daemon response did not include dictation benchmark data");
+    };
+    println!("VoxLine benchmark (full dictation path)");
+    print_asr_benchmark(&dictation.benchmark, response.cleanup_ms);
+    if dictation.paste_succeeded {
+        println!("  Stop-to-insert:    {} ms", dictation.total_ms);
+    } else {
+        println!("  Stop-to-clipboard: {} ms", dictation.total_ms);
+    }
+    println!(
+        "  Clipboard copied:  {}",
+        yes_no(dictation.copied_to_clipboard)
+    );
+    println!("  Paste attempted:   {}", yes_no(dictation.paste_attempted));
+    println!("  Paste succeeded:   {}", yes_no(dictation.paste_succeeded));
+    println!("  Cleanup used:      {}", yes_no(dictation.cleanup_used));
+    println!("  Insertion:         {}", dictation.insertion_reason);
+    Ok(())
+}
+
+fn print_asr_benchmark(benchmark: &voxline_core::protocol::AsrBenchmark, cleanup_ms: Option<u64>) {
+    println!("  Audio duration: {} ms", benchmark.audio_duration_ms);
+    println!("  Model load:     {} ms", benchmark.model_load_ms);
+    println!("  Transcribe:     {} ms", benchmark.transcribe_ms);
+    println!(
+        "  Total ASR:      {} ms",
+        benchmark.model_load_ms + benchmark.transcribe_ms
+    );
+    if let Some(cleanup_ms) = cleanup_ms {
+        println!("  Cleanup:        {cleanup_ms} ms");
+    }
 }
 
 fn yes_no(value: bool) -> &'static str {

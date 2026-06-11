@@ -78,3 +78,57 @@ pub fn verify_mode(path: &Path) -> Result<(), RuntimeError> {
     }
     Ok(())
 }
+
+pub fn secure_socket_permissions(path: &Path) -> Result<(), RuntimeError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|source| {
+        RuntimeError::Io {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    verify_socket(path)
+}
+
+#[must_use]
+pub fn socket_permissions_ok(path: &Path) -> bool {
+    verify_socket(path).is_ok()
+}
+
+pub fn verify_socket(path: &Path) -> Result<(), RuntimeError> {
+    let metadata = fs::metadata(path).map_err(|source| RuntimeError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if metadata.permissions().mode() & 0o177 != 0 {
+        return Err(RuntimeError::Io {
+            path: path.to_path_buf(),
+            source: std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "daemon socket must have mode 0600",
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn verify_socket_rejects_group_permissions() {
+        let socket =
+            std::env::temp_dir().join(format!("voxline-socket-test-{}", std::process::id()));
+        let _ = std::fs::remove_file(&socket);
+        std::fs::write(&socket, b"").expect("socket file");
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o660)).expect("chmod");
+        assert!(verify_socket(&socket).is_err());
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        assert!(verify_socket(&socket).is_ok());
+        let _ = std::fs::remove_file(socket);
+    }
+}
