@@ -19,9 +19,9 @@ use cpal::{
 use thiserror::Error;
 use tokio::sync::oneshot;
 use voxline_core::{
-    config::AudioConfig,
+    config::{AudioConfig, PathsConfig},
     protocol::{AudioRecording, JobId},
-    runtime::runtime_dir,
+    runtime::runtime_dir_for,
 };
 
 #[derive(Debug, Error)]
@@ -75,11 +75,11 @@ struct ActiveRecording {
 }
 
 impl AudioRecorder {
-    pub fn spawn(config: AudioConfig) -> Self {
+    pub fn spawn(config: AudioConfig, paths: PathsConfig) -> Self {
         let (commands, receiver) = mpsc::channel();
         thread::Builder::new()
             .name("voxline-audio-owner".into())
-            .spawn(move || owner_loop(config, receiver))
+            .spawn(move || owner_loop(config, paths, receiver))
             .expect("audio owner thread should start");
         Self { commands }
     }
@@ -110,7 +110,7 @@ impl AudioRecorder {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn owner_loop(config: AudioConfig, receiver: mpsc::Receiver<OwnerCommand>) {
+fn owner_loop(config: AudioConfig, paths: PathsConfig, receiver: mpsc::Receiver<OwnerCommand>) {
     let mut active: Option<ActiveRecording> = None;
     while let Ok(command) = receiver.recv() {
         match command {
@@ -124,7 +124,7 @@ fn owner_loop(config: AudioConfig, receiver: mpsc::Receiver<OwnerCommand>) {
             }
             OwnerCommand::Stop { job_id, reply } => {
                 let result = take_matching(&mut active, &job_id)
-                    .and_then(|recording| finish_recording(recording, &config));
+                    .and_then(|recording| finish_recording(recording, &config, &paths));
                 let _ = reply.send(result);
             }
             OwnerCommand::Cancel { job_id, reply } => {
@@ -228,6 +228,7 @@ fn build_stream(
 fn finish_recording(
     recording: ActiveRecording,
     config: &AudioConfig,
+    paths: &PathsConfig,
 ) -> Result<AudioRecording, AudioError> {
     let ActiveRecording {
         job_id,
@@ -250,7 +251,7 @@ fn finish_recording(
     let speech_detected = duration_ms >= config.gates.min_record_ms
         && rms_energy >= config.gates.min_rms_energy
         && peak_energy >= config.gates.min_peak_energy;
-    let wav_path = runtime_dir()
+    let wav_path = runtime_dir_for(paths)
         .map_err(|error| AudioError::Processing(error.to_string()))?
         .join(format!("{}.wav", job_id.0));
     write_wav(&wav_path, &resampled, config.target_sample_rate)?;

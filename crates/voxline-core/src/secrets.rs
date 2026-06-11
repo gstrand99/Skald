@@ -3,6 +3,8 @@ use std::{fs, path::PathBuf};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::paths;
+
 pub const OPENROUTER_SECRET_NAME: &str = "openrouter";
 const KEYRING_SERVICE: &str = "voxline";
 
@@ -74,8 +76,8 @@ pub fn secret_status(config: &SecretsConfig) -> SecretStatus {
     let env_configured = lookup_env(config).is_some();
     let insecure_file_enabled = config.allow_insecure_file_fallback;
     let insecure_file_configured = insecure_file_enabled
-        && expand_home(&config.insecure_file_path)
-            .and_then(|path| read_secrets_file(&path).ok())
+        && read_secrets_file(&paths::expand_home(&config.insecure_file_path))
+            .ok()
             .and_then(|file| file.openrouter)
             .is_some();
     SecretStatus {
@@ -95,9 +97,8 @@ pub fn lookup_openrouter_key(config: &SecretsConfig) -> Result<String, SecretErr
     if let Some(key) = lookup_env(config) {
         return Ok(key);
     }
-    if config.allow_insecure_file_fallback
-        && let Some(path) = expand_home(&config.insecure_file_path)
-    {
+    if config.allow_insecure_file_fallback {
+        let path = paths::expand_home(&config.insecure_file_path);
         let file = read_secrets_file(&path)?;
         if let Some(key) = file.openrouter.filter(|value| !value.trim().is_empty()) {
             return Ok(key);
@@ -170,14 +171,6 @@ fn verify_secret_file_mode(path: &PathBuf) -> Result<(), SecretError> {
         }
     }
     Ok(())
-}
-
-fn expand_home(path: &str) -> Option<PathBuf> {
-    if let Some(relative) = path.strip_prefix("~/") {
-        dirs::home_dir().map(|home| home.join(relative))
-    } else {
-        Some(PathBuf::from(path))
-    }
 }
 
 #[cfg(test)]

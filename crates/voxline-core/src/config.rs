@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use crate::secrets::SecretsConfig;
+use crate::{
+    paths::{self, scaffold_config_layout},
+    styles,
+};
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -138,6 +142,7 @@ pub struct CleanupConfig {
     pub enabled: bool,
     pub provider: String,
     pub model: String,
+    pub default_style: String,
     pub temperature: f32,
     pub timeout_ms: u64,
     pub fallback_to_raw_on_error: bool,
@@ -163,6 +168,17 @@ pub struct InjectionConfig {
     pub paste_delay_ms: u64,
     pub fallback_to_clipboard_only: bool,
     pub notify_on_clipboard_only: bool,
+    pub linux: InjectionLinuxConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct InjectionLinuxConfig {
+    pub session: String,
+    pub wayland_paste_command: String,
+    pub x11_paste_command: String,
+    pub gnome_wayland_mode: String,
+    pub optional_paste_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -297,6 +313,7 @@ impl Default for CleanupConfig {
             enabled: false,
             provider: "none".into(),
             model: String::new(),
+            default_style: styles::DEFAULT_STYLE_NAME.into(),
             temperature: 0.2,
             timeout_ms: 10_000,
             fallback_to_raw_on_error: true,
@@ -314,6 +331,18 @@ impl Default for InjectionConfig {
             paste_delay_ms: 120,
             fallback_to_clipboard_only: true,
             notify_on_clipboard_only: true,
+            linux: InjectionLinuxConfig::default(),
+        }
+    }
+}
+impl Default for InjectionLinuxConfig {
+    fn default() -> Self {
+        Self {
+            session: "auto".into(),
+            wayland_paste_command: "wtype -M ctrl -k v -m ctrl".into(),
+            x11_paste_command: "xdotool key ctrl+v".into(),
+            gnome_wayland_mode: "clipboard_only".into(),
+            optional_paste_command: String::new(),
         }
     }
 }
@@ -343,24 +372,52 @@ impl Config {
     }
 
     pub fn init(force: bool) -> Result<PathBuf, ConfigError> {
+        let config = Self::default();
         let path = Self::path()?;
         if path.exists() && !force {
             return Err(ConfigError::AlreadyExists(path));
         }
-        let parent = path
-            .parent()
-            .ok_or(ConfigError::ConfigDirectoryUnavailable)?;
-        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
-            path: parent.to_path_buf(),
+        scaffold_config_layout(&config.paths).map_err(|source| ConfigError::Write {
+            path: paths::resolve_config_dir(&config.paths),
             source,
         })?;
-        let text = toml::to_string_pretty(&Self::default())
+        styles::ensure_default_style_files(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        let text = toml::to_string_pretty(&config)
             .map_err(|error| ConfigError::Validation(error.to_string()))?;
         fs::write(&path, text).map_err(|source| ConfigError::Write {
             path: path.clone(),
             source,
         })?;
         Ok(path)
+    }
+
+    pub fn apply_profile(&mut self, profile: &str) -> Result<(), ConfigError> {
+        match profile {
+            "power-user-nvidia" => {
+                *self = Self {
+                    secrets: self.secrets.clone(),
+                    cleanup: self.cleanup.clone(),
+                    ..Self::default()
+                };
+            }
+            "cpu-safe" => {
+                self.asr.model_path = "~/.local/share/voxline/models/ggml-small.en.bin".into();
+                self.asr.threads = 4;
+                self.asr.gpu = false;
+                self.asr.lifecycle.mode = "on_demand".into();
+                self.asr.lifecycle.warm_on_daemon_start = false;
+                self.asr.lifecycle.idle_unload_seconds = 0;
+                self.cleanup.enabled = false;
+                self.cleanup.provider = "none".into();
+            }
+            other => {
+                return Err(ConfigError::Validation(format!(
+                    "unknown config profile: {other}"
+                )));
+            }
+        }
+        self.validate()
     }
 
     pub fn save(&self) -> Result<PathBuf, ConfigError> {
@@ -408,6 +465,11 @@ impl Config {
                 "cleanup model is required when openrouter cleanup is enabled".into(),
             ));
         }
+        if self.cleanup.enabled && self.cleanup.default_style.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "cleanup.default_style is required when cleanup is enabled".into(),
+            ));
+        }
         if !matches!(self.asr.lifecycle.mode.as_str(), "on_demand" | "keep_warm") {
             return Err(ConfigError::Validation(
                 "asr lifecycle mode must be on_demand or keep_warm".into(),
@@ -416,6 +478,31 @@ impl Config {
         if self.injection.auto_paste != AutoPasteMode::Off && !self.injection.copy_to_clipboard {
             return Err(ConfigError::Validation(
                 "auto paste requires copy_to_clipboard".into(),
+            ));
+        }
+        if !matches!(
+            self.injection.linux.gnome_wayland_mode.as_str(),
+            "clipboard_only" | "custom"
+        ) {
+            return Err(ConfigError::Validation(
+                "injection.linux.gnome_wayland_mode must be clipboard_only or custom".into(),
+            ));
+        }
+        if self.injection.linux.gnome_wayland_mode == "custom"
+            && self
+                .injection
+                .linux
+                .optional_paste_command
+                .trim()
+                .is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "injection.linux.optional_paste_command is required when gnome_wayland_mode is custom".into(),
+            ));
+        }
+        if self.paths.runtime_dir.trim().is_empty() {
+            return Err(ConfigError::Validation(
+                "paths.runtime_dir cannot be empty".into(),
             ));
         }
         Ok(())
@@ -440,5 +527,28 @@ mod tests {
         let mut config = Config::default();
         config.cleanup.enabled = true;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn cpu_safe_profile_matches_plan() {
+        let mut config = Config::default();
+        config.apply_profile("cpu-safe").unwrap();
+        assert!(!config.asr.gpu);
+        assert_eq!(config.asr.lifecycle.mode, "on_demand");
+        assert!(!config.cleanup.enabled);
+    }
+
+    #[test]
+    fn default_includes_injection_linux_section() {
+        let config = Config::default();
+        assert_eq!(config.injection.linux.session, "auto");
+        assert_eq!(config.injection.linux.gnome_wayland_mode, "clipboard_only");
+    }
+
+    #[test]
+    fn linux_example_config_is_valid() {
+        let text = include_str!("../../../config-example/linux/config.toml");
+        let config: Config = toml::from_str(text).expect("example config should parse");
+        config.validate().expect("example config should validate");
     }
 }
