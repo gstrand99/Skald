@@ -11,6 +11,7 @@ use std::{io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -20,10 +21,10 @@ use voxline_core::{
     apps,
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
     commands,
-    config::Config,
+    config::{AutoPasteMode, Config},
     paths,
     protocol::{
-        Command, Event, EventKind, JobState, PROTOCOL_VERSION, Request, Response,
+        Command, Event, EventKind, JobState, ModelState, PROTOCOL_VERSION, Request, Response,
         SessionEnvironment,
     },
     runtime::{runtime_dir_for, socket_path_for, socket_permissions_ok, verify_mode},
@@ -68,8 +69,6 @@ enum Commands {
     Overlay,
     Transcribe {
         audio_file: std::path::PathBuf,
-        #[arg(long)]
-        no_cleanup: bool,
     },
     Asr {
         #[command(subcommand)]
@@ -284,7 +283,19 @@ struct DoctorReport {
     snippet_issues: Vec<String>,
     voice_command_conflicts: Vec<String>,
     voice_commands_enabled: bool,
+    auto_paste_always: bool,
+    audio: AudioReport,
     suggestions: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct AudioReport {
+    input_device_present: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_device_name: Option<String>,
+    supported_input_config: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -294,6 +305,8 @@ struct AsrReport {
     model_exists: bool,
     gpu_requested: bool,
     lifecycle_mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    daemon_model_state: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,10 +351,7 @@ async fn main() -> Result<()> {
         Commands::Cancel => print_response(&send(Command::Cancel).await?),
         Commands::Watch => watch().await?,
         Commands::Overlay => run_overlay()?,
-        Commands::Transcribe {
-            audio_file,
-            no_cleanup: _,
-        } => print_response(
+        Commands::Transcribe { audio_file } => print_response(
             &send(Command::Transcribe {
                 audio_path: audio_file,
             })
@@ -766,6 +776,9 @@ async fn doctor(json: bool) -> Result<()> {
     report.suggestions = build_doctor_suggestions(&report);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
+        if doctor_has_failures(&report) {
+            bail!("doctor found configuration or socket issues");
+        }
         return Ok(());
     }
     print_doctor(&report);
@@ -775,6 +788,15 @@ async fn doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
+fn doctor_has_failures(report: &DoctorReport) -> bool {
+    !report.config_valid
+        || report
+            .socket_path
+            .as_ref()
+            .is_some_and(|_| !report.socket_secure)
+}
+
+#[allow(clippy::too_many_lines)]
 async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let config_valid = config.validate().is_ok();
     let runtime = runtime_dir_for(&config.paths).ok();
@@ -805,6 +827,12 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let trigger = trigger_guidance(session, desktop);
     let model_path = paths::expand_home(&config.asr.model_path);
     let preview = preview_doctor_report(config);
+    let audio = probe_audio_input();
+    let daemon_model_state = if daemon_reachable {
+        fetch_daemon_asr_state().await
+    } else {
+        None
+    };
     let secret_status = secrets::secret_status(&config.secrets);
     let cleanup_warning = if config.cleanup.enabled {
         Some("Warning: transcript text is sent to the configured cleanup provider.".into())
@@ -842,6 +870,7 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
             model_exists: model_path.is_file(),
             gpu_requested: config.asr.gpu,
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
+            daemon_model_state,
         },
         preview,
         paste: voxline_platform::paste_report(),
@@ -870,8 +899,56 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
             })
             .unwrap_or_default(),
         voice_commands_enabled: config.voice_commands.enabled,
+        auto_paste_always: config.injection.auto_paste == AutoPasteMode::Always,
+        audio,
         suggestions: Vec::new(),
     })
+}
+
+fn probe_audio_input() -> AudioReport {
+    let host = cpal::default_host();
+    let Some(device) = host.default_input_device() else {
+        return AudioReport {
+            input_device_present: false,
+            input_device_name: None,
+            supported_input_config: false,
+            warning: Some("no default input device".into()),
+        };
+    };
+    let name = device.name().ok();
+    match device.default_input_config() {
+        Ok(_) => AudioReport {
+            input_device_present: true,
+            input_device_name: name,
+            supported_input_config: true,
+            warning: None,
+        },
+        Err(error) => AudioReport {
+            input_device_present: true,
+            input_device_name: name,
+            supported_input_config: false,
+            warning: Some(format!("no supported input config: {error}")),
+        },
+    }
+}
+
+async fn fetch_daemon_asr_state() -> Option<String> {
+    let response = send(Command::AsrStatus).await.ok()?;
+    if !response.ok {
+        return None;
+    }
+    response
+        .status
+        .map(|status| format_model_state(&status.final_model_state))
+}
+
+fn format_model_state(state: &ModelState) -> String {
+    match state {
+        ModelState::Unloaded => "unloaded".into(),
+        ModelState::Loading => "loading".into(),
+        ModelState::Ready => "ready".into(),
+        ModelState::Failed { code, message } => format!("failed ({code}: {message})"),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -888,6 +965,16 @@ fn print_doctor(report: &DoctorReport) {
     println!(
         "Desktop: {}",
         report.environment.desktop.as_deref().unwrap_or("unknown")
+    );
+    println!("CLI environment:");
+    println!(
+        "  Wayland display: {}",
+        yes_no(report.environment.wayland_display_present)
+    );
+    println!("  DISPLAY: {}", yes_no(report.environment.display_present));
+    println!(
+        "  D-Bus session: {}",
+        yes_no(report.environment.dbus_session_bus_present)
     );
     println!("Config valid: {}", yes_no(report.config_valid));
     println!("Runtime secure: {}", yes_no(report.runtime_secure));
@@ -941,6 +1028,28 @@ fn print_doctor(report: &DoctorReport) {
         yes_no(report.secrets.openrouter_configured)
     );
     println!("  Env fallback: {}", yes_no(report.secrets.env_configured));
+    println!(
+        "  Insecure file fallback: {}",
+        yes_no(report.secrets.insecure_file_enabled)
+    );
+    if report.secrets.insecure_file_enabled {
+        println!("  Warning: plaintext secrets file fallback is enabled.");
+    }
+    println!("Audio:");
+    println!(
+        "  Input device: {}",
+        yes_no(report.audio.input_device_present)
+    );
+    if let Some(name) = &report.audio.input_device_name {
+        println!("  Device name: {name}");
+    }
+    println!(
+        "  Supported input config: {}",
+        yes_no(report.audio.supported_input_config)
+    );
+    if let Some(warning) = &report.audio.warning {
+        println!("  Warning: {warning}");
+    }
     println!("Config layout:");
     println!(
         "  styles/apps/snippets dirs: {}",
@@ -1019,6 +1128,9 @@ fn print_doctor(report: &DoctorReport) {
     println!("  Model exists: {}", yes_no(report.asr.model_exists));
     println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
     println!("  Lifecycle: {}", report.asr.lifecycle_mode);
+    if let Some(state) = &report.asr.daemon_model_state {
+        println!("  Daemon model state: {state}");
+    }
     if let Some(preview) = &report.preview {
         println!("Preview:");
         println!("  Model: {}", preview.model_path);
@@ -1039,6 +1151,9 @@ fn print_doctor(report: &DoctorReport) {
         "  Paste available: {}",
         yes_no(report.paste.paste_available)
     );
+    if report.auto_paste_always {
+        println!("  Warning: auto_paste = \"always\" bypasses paste-safety target checks.");
+    }
     println!("  Behavior: {}", report.paste.reason);
     if !report.suggestions.is_empty() {
         println!("Suggestions:");
@@ -1104,6 +1219,17 @@ fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
         && !report.secrets.openrouter_configured
     {
         suggestions.push("Run `voxline secrets set openrouter` before using cleanup.".into());
+    }
+    if report.secrets.insecure_file_enabled {
+        suggestions.push(
+            "Migrate to the keyring with `voxline secrets set openrouter` and disable allow_insecure_file_fallback in config.".into(),
+        );
+    }
+    if report.auto_paste_always {
+        suggestions.push(
+            "auto_paste = \"always\" bypasses paste-safety target checks; consider \"safe\"."
+                .into(),
+        );
     }
     suggestions
 }

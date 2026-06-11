@@ -463,6 +463,15 @@ async fn benchmark_candidates(
         .context("daemon did not return model benchmark results")
 }
 
+fn truncate_transcript_preview(text: &str) -> String {
+    const LIMIT: usize = 48;
+    if text.chars().count() <= LIMIT {
+        text.to_owned()
+    } else {
+        format!("{}…", text.chars().take(LIMIT).collect::<String>())
+    }
+}
+
 fn print_bench_table(results: &[voxline_core::protocol::ModelBenchResult]) {
     println!("\nModel benchmark results:");
     println!(
@@ -474,7 +483,7 @@ fn print_bench_table(results: &[voxline_core::protocol::ModelBenchResult]) {
             println!("{:<22} ERROR: {error}", result.model_id);
             continue;
         }
-        let preview: String = result.transcript_text.chars().take(48).collect();
+        let preview = truncate_transcript_preview(&result.transcript_text);
         println!(
             "{:<22} {:>8} ms {:>8} ms {:>6} ms  {preview}",
             result.model_id,

@@ -1,6 +1,7 @@
-use std::io::{self, Write};
+use std::io::{self, IsTerminal};
 
 use anyhow::{Context, Result, bail};
+use dialoguer::Password;
 use voxline_core::{
     config::Config,
     secrets::{self, OPENROUTER_SECRET_NAME},
@@ -26,10 +27,15 @@ fn set_secret(provider: &str) -> Result<()> {
         bail!("unsupported secret provider: {provider}");
     }
     let config = Config::load_or_default()?;
-    print!("OpenRouter API key: ");
-    io::stdout().flush()?;
-    let mut key = String::new();
-    io::stdin().read_line(&mut key)?;
+    let key = if io::stdin().is_terminal() {
+        Password::new()
+            .with_prompt("OpenRouter API key")
+            .interact()?
+    } else {
+        let mut key = String::new();
+        io::stdin().read_line(&mut key)?;
+        key.trim().to_owned()
+    };
     let key = key.trim();
     if key.is_empty() {
         bail!("API key cannot be empty");
