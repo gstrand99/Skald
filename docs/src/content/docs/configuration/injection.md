@@ -28,8 +28,8 @@ optional_paste_command = ""
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `copy_to_clipboard` | boolean | `true` | Copy final text to the system clipboard. Required when `auto_paste` is not `off`. |
-| `auto_paste` | string | `"safe"` | **`off`**: never paste; clipboard only. **`safe`**: paste only when the active target is stable and known at start, stop, and paste time, and within `max_paste_age_ms`. **`always`**: attempt paste when a supported backend exists, skipping target-stability and max-age checks; session-support and terminal guards still apply. |
-| `max_paste_age_ms` | integer | `5000` | In `safe` mode, maximum milliseconds between stop and paste. Older targets fall back to clipboard-only. |
+| `auto_paste` | string | `"safe"` | **`off`**: never paste; clipboard only. **`safe`**: paste only when the active target is stable and known at start, stop, and paste time, and within `max_paste_age_ms`. **`always`**: attempt paste when a supported backend exists, skipping target-stability checks but still enforcing `max_paste_age_ms`; session-support and terminal guards still apply. |
+| `max_paste_age_ms` | integer | `5000` | Maximum milliseconds between stop and paste in `safe` and `always` modes. Older transcripts fall back to clipboard-only. |
 | `restore_clipboard` | boolean | `true` | Save clipboard contents before copying dictation text; restore after a **successful** paste when true. |
 | `paste_delay_ms` | integer | `120` | Delay in milliseconds before paste and before clipboard restore (allows focus to settle). |
 | `fallback_to_clipboard_only` | boolean | `true` | When paste cannot be verified safe, leave text on the clipboard instead of failing the job. |
@@ -54,11 +54,23 @@ Hyprland uses `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow`; Sway us
 
 | Environment | Paste backend |
 |-------------|---------------|
-| Hyprland | `hyprctl` Shift+Insert |
+| Hyprland | `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow` (see below) |
 | Sway | `wtype` |
 | X11 | `xdotool` |
 | GNOME / KDE Wayland | Clipboard-only by default |
 | Terminals | Often clipboard-only unless compositor supports safe target verification |
+
+### Hyprland paste
+
+Hyprland uses `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow` rather than
+`wtype` Ctrl+V. Shift+Insert is widely recognized in terminals, which is why VoxLine
+allows automatic paste into terminals on Hyprland only (other backends keep the
+terminal guard).
+
+Some XWayland apps paste the **primary** selection on Shift+Insert, not the clipboard.
+Before dispatching the shortcut, VoxLine best-effort copies the dictation text to the
+primary selection with `wl-copy --primary` (failures are logged at debug and do not
+abort the paste). Desktop-session validation is still needed across common Hyprland apps.
 
 Application profiles can set `prefer_clipboard_only` per app. See [Related files](/configuration/related-files/).
 
@@ -73,4 +85,5 @@ voxline doctor    # paste capability report
 ## Notes
 
 - Safe paste captures target context at recording start, stop, and immediately before paste.
+- Stability compares `backend`, window `id`, and `app_id` only; window titles may change without forcing a fallback.
 - Changing targets during dictation forces clipboard-only output when `auto_paste = "safe"`.

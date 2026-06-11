@@ -191,6 +191,9 @@ pub fn paste_backend() -> Option<PasteBackend> {
 }
 
 pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
+    if backend == PasteBackend::Hyprland {
+        sync_primary_selection_best_effort();
+    }
     let (tool, args): (&'static str, &[&str]) = match backend {
         PasteBackend::X11 => ("xdotool", &["key", "--clearmodifiers", "ctrl+v"]),
         PasteBackend::Hyprland => (
@@ -207,6 +210,39 @@ pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
         Ok(())
     } else {
         Err(PlatformError::Failed { tool })
+    }
+}
+
+fn sync_primary_selection_best_effort() {
+    if !command_exists("wl-copy") {
+        tracing::debug!("wl-copy unavailable; skipping primary selection sync for Hyprland paste");
+        return;
+    }
+    let Ok(text) = read_clipboard() else {
+        tracing::debug!("could not read clipboard for primary selection sync");
+        return;
+    };
+    let mut child = match Command::new("wl-copy")
+        .args(["--primary"])
+        .stdin(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            tracing::debug!(%error, "failed to start wl-copy for primary selection sync");
+            return;
+        }
+    };
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(error) = stdin.write_all(text.as_bytes())
+    {
+        tracing::debug!(%error, "failed to write primary selection");
+        return;
+    }
+    match child.wait() {
+        Ok(status) if status.success() => {}
+        Ok(_) => tracing::debug!("wl-copy --primary exited unsuccessfully"),
+        Err(error) => tracing::debug!(%error, "failed to wait for wl-copy --primary"),
     }
 }
 
@@ -571,11 +607,11 @@ fn capture_hyprland_target() -> Option<TargetContext> {
 fn capture_x11_target() -> Option<TargetContext> {
     let id = command_stdout("xdotool", &["getactivewindow"])?;
     let title = command_stdout("xdotool", &["getwindowname", &id]);
-    let pid = command_stdout("xdotool", &["getwindowpid", &id]);
+    let app_id = command_stdout("xdotool", &["getactivewindow", "getwindowclassname"]);
     Some(TargetContext {
         backend: TargetBackend::X11,
         id,
-        app_id: pid,
+        app_id,
         title,
     })
 }
