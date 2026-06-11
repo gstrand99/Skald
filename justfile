@@ -156,6 +156,13 @@ bench-dictation wav *flags="": build
 
 # Install release binaries to ~/.local/bin (user-local).
 install: release
+    @just _install-release-binaries
+
+# Install CUDA release binaries to ~/.local/bin (user-local).
+install-cuda: release-cuda
+    @just _install-release-binaries
+
+_install-release-binaries:
     #!/usr/bin/env bash
     set -euo pipefail
     dest="${HOME}/.local/bin"

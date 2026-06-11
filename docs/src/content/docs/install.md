@@ -35,13 +35,15 @@ Binaries install to `target/release/` (`voxline`, `voxlined`, `voxline-overlay`)
 User-local install (runs the setup wizard when no config exists):
 
 ```bash
-just install
+just install              # after just release (CPU)
+just install-cuda         # after just release-cuda (CUDA voxlined)
 ```
 
 Skip the wizard (CI or manual setup):
 
 ```bash
 VOXLINE_SKIP_SETUP=1 just install
+VOXLINE_SKIP_SETUP=1 just install-cuda
 ```
 
 ## First-time setup

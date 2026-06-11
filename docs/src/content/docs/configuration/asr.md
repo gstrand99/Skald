@@ -21,7 +21,13 @@ idle_unload_seconds = 900
 
 [asr.hallucination_filter]
 enabled = true
-phrases = [ "thank you.", "thanks for watching." ]
+phrases = [
+  "thank you.",
+  "thanks for watching.",
+  "subtitles by",
+  "subtitle by",
+  "captioned by",
+]
 ```
 
 ## `[asr]` options
@@ -46,10 +52,12 @@ phrases = [ "thank you.", "thanks for watching." ]
 ## `[asr.hallucination_filter]` options
 
 Filters exact-match hallucination phrases Whisper sometimes emits on silence or noise.
+The filter applies only to transcripts of **five words or fewer**; longer output is
+never dropped by this check.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `enabled` | boolean | `true` | When true, drop transcripts that match a listed phrase exactly (after trimming). |
+| `enabled` | boolean | `true` | When true, drop short transcripts that match a listed phrase exactly (after trimming). |
 | `phrases` | array of strings | see defaults | Phrases to treat as empty output. Default list includes common YouTube-style artifacts. |
 
 Default phrases:
