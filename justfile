@@ -63,6 +63,14 @@ service-start: build-cuda
 service-stop: build-cuda
     target/debug/voxline service stop
 
+# Preview OpenRouter cleanup for sample text.
+cleanup-preview text: build
+    target/debug/voxline cleanup preview "{{text}}"
+
+# Test OpenRouter connectivity through the daemon.
+test-openrouter: build
+    target/debug/voxline test openrouter
+
 # Validate a generated WAV file.
 inspect wav:
     file {{wav}}

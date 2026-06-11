@@ -1,5 +1,6 @@
 mod asr;
 mod audio;
+mod cleanup;
 mod injection;
 
 use std::{
@@ -20,9 +21,10 @@ use tokio::{
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use voxline_core::{
+    cleanup::{CleanupOverride, should_run_cleanup},
     config::{
-        AudioGatesConfig, AutoPasteMode, Config, InjectionConfig, NotificationsConfig,
-        PrivacyConfig,
+        AudioGatesConfig, AutoPasteMode, CleanupConfig, Config, InjectionConfig,
+        NotificationsConfig, PrivacyConfig, SecretsConfig,
     },
     protocol::{
         AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
@@ -49,6 +51,7 @@ struct AppState {
     notifications: NotificationsConfig,
     privacy: PrivacyConfig,
     target_at_start: Mutex<Option<voxline_platform::TargetContext>>,
+    cleanup_override: Mutex<Option<CleanupOverride>>,
 }
 
 #[tokio::main]
@@ -91,6 +94,7 @@ async fn main() -> Result<()> {
         notifications: config.notifications,
         privacy: config.privacy,
         target_at_start: Mutex::new(None),
+        cleanup_override: Mutex::new(None),
     });
 
     info!(path = %socket.display(), "voxlined listening");
@@ -144,6 +148,8 @@ async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> Result<()> {
                         message: error.to_string(),
                     }),
                     session_environment: None,
+                    cleaned_text: None,
+                    cleanup_ms: None,
                 };
                 write_json_line(&mut writer, &response).await?;
                 continue;
@@ -176,8 +182,8 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::Status | Command::AsrStatus => {
             ok_response(request.request_id, state.status.read().await.clone())
         }
-        Command::Toggle => toggle(request.request_id, state).await,
-        Command::Start => start(request.request_id, state).await,
+        Command::Toggle { cleanup } => toggle(request.request_id, state, cleanup).await,
+        Command::Start => start(request.request_id, state, None).await,
         Command::Stop => stop(request.request_id, state).await,
         Command::Cancel => cancel(request.request_id, state).await,
         Command::Transcribe { audio_path } => {
@@ -188,6 +194,8 @@ async fn dispatch(request: Request, state: &AppState) -> Response {
         Command::AsrRestart => asr_restart(request.request_id, state).await,
         Command::TestClipboard => test_clipboard(request.request_id, state).await,
         Command::TestPaste => test_paste(request.request_id, state).await,
+        Command::TestOpenrouter => test_openrouter(request.request_id, state).await,
+        Command::CleanupPreview { text } => cleanup_preview(request.request_id, state, text).await,
         Command::DaemonEnvironment => {
             daemon_environment_response(request.request_id, state.status.read().await.clone())
         }
@@ -206,6 +214,8 @@ fn daemon_environment_response(request_id: String, status: DaemonStatus) -> Resp
         benchmark: None,
         error: None,
         session_environment: Some(current_session_environment()),
+        cleaned_text: None,
+        cleanup_ms: None,
     }
 }
 
@@ -250,6 +260,8 @@ fn data_response(
         benchmark,
         error: None,
         session_environment: None,
+        cleaned_text: None,
+        cleanup_ms: None,
     }
 }
 
@@ -272,7 +284,22 @@ fn error_response(
             message: message.into(),
         }),
         session_environment: None,
+        cleaned_text: None,
+        cleanup_ms: None,
     }
+}
+
+fn reload_job_config() -> (CleanupConfig, SecretsConfig, bool) {
+    Config::load_or_default().map_or_else(
+        |_| (CleanupConfig::default(), SecretsConfig::default(), false),
+        |config| {
+            (
+                config.cleanup.clone(),
+                config.secrets.clone(),
+                config.cleanup.enabled,
+            )
+        },
+    )
 }
 
 async fn transcribe(
@@ -366,20 +393,25 @@ async fn asr_error_response(
     error_response(request_id, "asr_error", &message, Some(status))
 }
 
-async fn toggle(request_id: String, state: &AppState) -> Response {
+async fn toggle(
+    request_id: String,
+    state: &AppState,
+    cleanup: Option<CleanupOverride>,
+) -> Response {
     let job_state = state.status.read().await.job_state.clone();
     match job_state {
-        JobState::Idle => start(request_id, state).await,
+        JobState::Idle => start(request_id, state, cleanup).await,
         JobState::Recording => stop(request_id, state).await,
         _ => state_error(request_id, state, "busy", "VoxLine is busy").await,
     }
 }
 
-async fn start(request_id: String, state: &AppState) -> Response {
+async fn start(request_id: String, state: &AppState, cleanup: Option<CleanupOverride>) -> Response {
     if state.status.read().await.job_state != JobState::Idle {
         return state_error(request_id, state, "busy", "VoxLine is busy").await;
     }
     let job_id = JobId::new();
+    *state.cleanup_override.lock().await = cleanup;
     *state.target_at_start.lock().await = voxline_platform::capture_active_target();
     match state.audio.start(job_id.clone()).await {
         Ok(()) => {
@@ -466,19 +498,56 @@ async fn finish_dictation(
         );
     }
 
+    let cleanup_override = state.cleanup_override.lock().await.take();
+    let (cleanup_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let raw_text = transcript.text.clone();
+    let cleanup_outcome = if should_run_cleanup(
+        cleanup_enabled,
+        cleanup_override,
+        &raw_text,
+        cleanup_config.skip_if_word_count_below,
+    ) {
+        update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
+        match cleanup::run_cleanup(&cleanup_config, &secrets_config, &raw_text).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                warn!(%error, "cleanup failed; falling back to raw transcript");
+                if cleanup_config.fallback_to_raw_on_error {
+                    cleanup::failed_fallback_outcome(raw_text)
+                } else {
+                    let status = update_state(state, None, JobState::Idle).await;
+                    return error_response(
+                        request_id,
+                        "cleanup_error",
+                        &error.to_string(),
+                        Some(status),
+                    );
+                }
+            }
+        }
+    } else {
+        cleanup::passthrough_outcome(raw_text)
+    };
+    let final_text = cleanup_outcome.text.clone();
+    let mut final_transcript = transcript.clone();
+    final_transcript.text = final_text.clone();
+    {
+        let mut status = state.status.write().await;
+        status.cleanup_enabled = cleanup_enabled;
+    }
+
     let clipboard_snapshot = state
         .injection
         .restore_clipboard
         .then(voxline_platform::save_clipboard);
-    let copied_to_clipboard =
-        match copy_final_text(state, &recording.job_id, &transcript.text).await {
-            Ok(copied) => copied,
-            Err(message) => {
-                let status = update_state(state, None, JobState::Idle).await;
-                emit_error(state, Some(recording.job_id), "clipboard_error", &message);
-                return error_response(request_id, "clipboard_error", &message, Some(status));
-            }
-        };
+    let copied_to_clipboard = match copy_final_text(state, &recording.job_id, &final_text).await {
+        Ok(copied) => copied,
+        Err(message) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            emit_error(state, Some(recording.job_id), "clipboard_error", &message);
+            return error_response(request_id, "clipboard_error", &message, Some(status));
+        }
+    };
     let paste_outcome = if copied_to_clipboard {
         insert_if_safe(state, &recording.job_id, target_at_stop, started).await
     } else {
@@ -503,7 +572,7 @@ async fn finish_dictation(
 
     let result = DictationResult {
         job_id: recording.job_id.clone(),
-        transcript: transcript.clone(),
+        transcript: final_transcript.clone(),
         benchmark: benchmark.clone(),
         total_ms: elapsed_ms(started),
         copied_to_clipboard,
@@ -511,6 +580,8 @@ async fn finish_dictation(
         paste_attempted: paste_outcome.paste_attempted,
         paste_succeeded: paste_outcome.paste_succeeded,
         clipboard_restored,
+        cleanup_used: cleanup_outcome.used,
+        cleanup_failed: cleanup_outcome.failed,
         insertion_reason: paste_outcome.insertion_reason.clone(),
     };
     let _ = state.events.send(Event::Result {
@@ -536,9 +607,89 @@ async fn finish_dictation(
         request_id,
         status,
         Some(recording),
-        Some(transcript),
+        Some(final_transcript),
         Some(benchmark),
     )
+}
+
+async fn test_openrouter(request_id: String, state: &AppState) -> Response {
+    let (cleanup_config, secrets_config, _) = reload_job_config();
+    if cleanup_config.provider != "openrouter" {
+        return state_error(
+            request_id,
+            state,
+            "openrouter_test_unavailable",
+            "cleanup provider is not set to openrouter",
+        )
+        .await;
+    }
+    match cleanup::run_cleanup(&cleanup_config, &secrets_config, "VoxLine OpenRouter test").await {
+        Ok(outcome) => {
+            let status = state.status.read().await.clone();
+            Response {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                ok: true,
+                status: Some(status),
+                recording: None,
+                transcript: None,
+                benchmark: None,
+                error: None,
+                session_environment: None,
+                cleaned_text: Some(outcome.text),
+                cleanup_ms: Some(outcome.cleanup_ms),
+            }
+        }
+        Err(error) => {
+            state_error(
+                request_id,
+                state,
+                "openrouter_test_failed",
+                &error.to_string(),
+            )
+            .await
+        }
+    }
+}
+
+async fn cleanup_preview(request_id: String, state: &AppState, text: String) -> Response {
+    let (cleanup_config, secrets_config, cleanup_enabled) = reload_job_config();
+    if !cleanup_enabled && cleanup_config.provider == "none" {
+        return state_error(
+            request_id,
+            state,
+            "cleanup_disabled",
+            "cleanup is disabled; run voxline cleanup enable openrouter",
+        )
+        .await;
+    }
+    match cleanup::run_cleanup(&cleanup_config, &secrets_config, &text).await {
+        Ok(outcome) => {
+            let status = state.status.read().await.clone();
+            Response {
+                protocol_version: PROTOCOL_VERSION,
+                request_id,
+                ok: true,
+                status: Some(status),
+                recording: None,
+                transcript: None,
+                benchmark: None,
+                error: None,
+                session_environment: None,
+                cleaned_text: Some(outcome.text),
+                cleanup_ms: Some(outcome.cleanup_ms),
+            }
+        }
+        Err(error) => {
+            state_error(
+                request_id,
+                state,
+                "cleanup_preview_failed",
+                &error.to_string(),
+            )
+            .await
+        }
+    }
 }
 
 async fn copy_final_text(state: &AppState, job_id: &JobId, text: &str) -> Result<bool, String> {
@@ -740,6 +891,7 @@ async fn cancel(request_id: String, state: &AppState) -> Response {
     match state.audio.cancel(job_id.clone()).await {
         Ok(()) => {
             *state.target_at_start.lock().await = None;
+            *state.cleanup_override.lock().await = None;
             update_state(state, Some(job_id), JobState::Cancelled).await;
             let status = update_state(state, None, JobState::Idle).await;
             ok_response(request_id, status)
