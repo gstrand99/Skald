@@ -31,6 +31,8 @@ pub enum Command {
     Toggle {
         #[serde(default)]
         cleanup: Option<CleanupOverride>,
+        #[serde(default)]
+        style: Option<String>,
     },
     Start,
     Stop,
@@ -47,6 +49,8 @@ pub enum Command {
     TestOpenrouter,
     CleanupPreview {
         text: String,
+        #[serde(default)]
+        style: Option<String>,
     },
     DaemonEnvironment,
     Subscribe {
