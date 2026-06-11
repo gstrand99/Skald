@@ -1,0 +1,6 @@
+name = "voxline-docs"
+compatibility_date = "2024-09-23"
+
+# Serves the static Astro build. Attach docs.voxline.dev in the Cloudflare dashboard.
+[assets]
+directory = "./dist"

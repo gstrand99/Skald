@@ -178,6 +178,19 @@ voxline toggle --no-cleanup     # skip cleanup for one job
 
 See [Cleanup (opt-in)](#cleanup-opt-in) below.
 
+## Linux release
+
+User documentation is published at [docs.voxline.dev](https://docs.voxline.dev) (source in
+[`docs/`](docs/)): install, setup wizard, configuration, CLI reference,
+troubleshooting, and the Linux desktop matrix.
+
+```bash
+just release-cuda         # CUDA voxlined + release CLI/overlay
+just install              # install to ~/.local/bin and run setup when needed
+voxline setup             # interactive probe, models, benchmarks, config
+voxline doctor
+```
+
 ## Development
 
 ```bash
@@ -193,6 +206,7 @@ Useful validation commands:
 just test-clipboard
 just test-paste
 just doctor
+just bench-e2e ./sample.wav
 ```
 
 ## Service and shortcuts

@@ -18,6 +18,8 @@ tokio.workspace = true
 ulid.workspace = true
 voxline-core = { path = "../voxline-core" }
 voxline-platform = { path = "../voxline-platform" }
+dialoguer.workspace = true
+indicatif.workspace = true
 
 [lints]
 workspace = true

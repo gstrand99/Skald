@@ -38,6 +38,10 @@ pub struct AsrManager {
 enum Command {
     Load(oneshot::Sender<Result<u64, AsrError>>),
     Unload(oneshot::Sender<Result<(), AsrError>>),
+    Reload {
+        config: AsrConfig,
+        reply: oneshot::Sender<Result<u64, AsrError>>,
+    },
     Transcribe {
         path: PathBuf,
         reply: oneshot::Sender<Result<(Transcript, AsrBenchmark), AsrError>>,
@@ -196,6 +200,14 @@ impl AsrManager {
         response.await.map_err(|_| AsrError::WorkerStopped)?
     }
 
+    pub async fn reload(&self, config: AsrConfig) -> Result<u64, AsrError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(Command::Reload { config, reply })
+            .map_err(|_| AsrError::WorkerStopped)?;
+        response.await.map_err(|_| AsrError::WorkerStopped)?
+    }
+
     pub async fn transcribe(&self, path: PathBuf) -> Result<(Transcript, AsrBenchmark), AsrError> {
         let (reply, response) = oneshot::channel();
         self.commands
@@ -231,6 +243,11 @@ impl Worker {
                 Command::Unload(reply) => {
                     self.engine.unload();
                     let _ = reply.send(Ok(()));
+                }
+                Command::Reload { config, reply } => {
+                    self.engine.unload();
+                    self.engine.config = config;
+                    let _ = reply.send(self.engine.load());
                 }
                 Command::Transcribe { path, reply } => {
                     let _ = reply.send(self.transcribe(&path));
