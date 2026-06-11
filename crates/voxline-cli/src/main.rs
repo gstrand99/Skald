@@ -2,6 +2,7 @@ mod apps_cmd;
 mod cleanup_cmd;
 mod secrets_cmd;
 mod service;
+mod snippets_cmd;
 mod styles_cmd;
 
 use std::time::Duration;
@@ -20,7 +21,7 @@ use voxline_core::{
     paths,
     protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
     runtime::{runtime_dir_for, socket_path_for, verify_mode},
-    secrets, styles,
+    secrets, snippets, styles,
 };
 use voxline_platform::{
     SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance,
@@ -47,6 +48,8 @@ enum Commands {
         no_cleanup: bool,
         #[arg(long)]
         style: Option<String>,
+        #[arg(long)]
+        snippet: Option<String>,
     },
     Start,
     #[command(name = "ptt-start")]
@@ -110,6 +113,10 @@ enum Commands {
     Apps {
         #[command(subcommand)]
         command: apps_cmd::AppsCommands,
+    },
+    Snippets {
+        #[command(subcommand)]
+        command: snippets_cmd::SnippetsCommands,
     },
 }
 
@@ -216,6 +223,7 @@ struct DoctorReport {
     config_layout_ready: bool,
     style_issues: Vec<String>,
     app_issues: Vec<String>,
+    snippet_issues: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -246,10 +254,12 @@ async fn main() -> Result<()> {
             cleanup,
             no_cleanup,
             style,
+            snippet,
         } => print_response(
             &send(Command::Toggle {
                 cleanup: cleanup_override(cleanup, no_cleanup)?,
                 style,
+                snippet,
             })
             .await?,
         ),
@@ -313,6 +323,12 @@ async fn main() -> Result<()> {
         },
         Commands::Styles { command } => styles_cmd::run(command)?,
         Commands::Apps { command } => apps_cmd::run(command)?,
+        Commands::Snippets { command } => match command {
+            snippets_cmd::SnippetsCommands::Insert { name } => {
+                print_response(&send(Command::InsertSnippet { name }).await?);
+            }
+            _ => snippets_cmd::run(command)?,
+        },
     }
     Ok(())
 }
@@ -376,6 +392,7 @@ async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
     let started = send(Command::Toggle {
         cleanup,
         style: None,
+        snippet: None,
     })
     .await?;
     if !started.ok {
@@ -387,6 +404,7 @@ async fn record(seconds: u64, cleanup: Option<CleanupOverride>) -> Result<()> {
     let stopped = send(Command::Toggle {
         cleanup: None,
         style: None,
+        snippet: None,
     })
     .await?;
     print_response(&stopped);
@@ -577,6 +595,10 @@ async fn doctor(json: bool) -> Result<()> {
             .into_iter()
             .map(|issue| format!("{}: {}", issue.app, issue.message))
             .collect(),
+        snippet_issues: snippets::validate_installed_snippets(&config.paths)
+            .into_iter()
+            .map(|issue| format!("{}: {}", issue.snippet, issue.message))
+            .collect(),
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -671,6 +693,13 @@ fn print_doctor(report: &DoctorReport) {
     } else {
         for issue in &report.app_issues {
             println!("  app profile issue: {issue}");
+        }
+    }
+    if report.snippet_issues.is_empty() {
+        println!("  insert snippets: valid");
+    } else {
+        for issue in &report.snippet_issues {
+            println!("  snippet issue: {issue}");
         }
     }
     println!("Cleanup:");

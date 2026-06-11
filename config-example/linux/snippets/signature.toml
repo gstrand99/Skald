@@ -1,0 +1,4 @@
+name = "signature"
+type = "insert"
+aliases = ["signature", "insert signature"]
+content_file = "signature.md"
