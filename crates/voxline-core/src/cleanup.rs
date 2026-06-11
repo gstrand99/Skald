@@ -29,10 +29,30 @@ pub fn should_run_cleanup(
     text: &str,
     skip_if_word_count_below: usize,
 ) -> bool {
+    should_run_cleanup_with_voice_style(
+        enabled,
+        override_mode,
+        text,
+        skip_if_word_count_below,
+        false,
+    )
+}
+
+#[must_use]
+pub fn should_run_cleanup_with_voice_style(
+    enabled: bool,
+    override_mode: Option<CleanupOverride>,
+    text: &str,
+    skip_if_word_count_below: usize,
+    voice_style_requested: bool,
+) -> bool {
     match override_mode {
         Some(CleanupOverride::Disable) => false,
         Some(CleanupOverride::Force) => true,
-        None => enabled && !should_skip_cleanup(text, skip_if_word_count_below),
+        None => {
+            enabled
+                && (!should_skip_cleanup(text, skip_if_word_count_below) || voice_style_requested)
+        }
     }
 }
 
@@ -63,6 +83,16 @@ mod tests {
         assert!(!should_skip_cleanup(
             "hey john thanks for catching that bug",
             5
+        ));
+    }
+
+    #[test]
+    fn voice_style_requests_cleanup_for_short_remainder() {
+        assert!(!should_run_cleanup_with_voice_style(
+            true, None, "hey john", 5, false,
+        ));
+        assert!(should_run_cleanup_with_voice_style(
+            true, None, "hey john", 5, true,
         ));
     }
 

@@ -133,3 +133,10 @@ store_audio = false
 store_raw_transcript = false
 store_cleaned_transcript = false
 log_transcripts = false
+
+# Experimental: spoken routing at the start of a transcript (disabled by default).
+# Requires a prefix such as "voxline professional ..." or "voxline signature".
+# Test with: voxline commands test "voxline professional hey john thanks"
+[voice_commands]
+enabled = false
+prefix = "voxline"

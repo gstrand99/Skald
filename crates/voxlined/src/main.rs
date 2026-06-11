@@ -21,10 +21,10 @@ use tokio::{
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 use voxline_core::{
-    cleanup::{CleanupOverride, should_run_cleanup},
+    cleanup::{CleanupOverride, should_run_cleanup_with_voice_style},
     config::{
         AudioGatesConfig, AutoPasteMode, CleanupConfig, Config, InjectionConfig,
-        NotificationsConfig, PathsConfig, PrivacyConfig, SecretsConfig,
+        NotificationsConfig, PathsConfig, PrivacyConfig, SecretsConfig, VoiceCommandsConfig,
     },
     protocol::{
         AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
@@ -300,7 +300,13 @@ fn error_response(
     }
 }
 
-fn reload_job_config() -> (CleanupConfig, PathsConfig, SecretsConfig, bool) {
+fn reload_job_config() -> (
+    CleanupConfig,
+    PathsConfig,
+    SecretsConfig,
+    bool,
+    VoiceCommandsConfig,
+) {
     Config::load_or_default().map_or_else(
         |_| {
             (
@@ -308,6 +314,7 @@ fn reload_job_config() -> (CleanupConfig, PathsConfig, SecretsConfig, bool) {
                 PathsConfig::default(),
                 SecretsConfig::default(),
                 false,
+                VoiceCommandsConfig::default(),
             )
         },
         |config| {
@@ -316,6 +323,7 @@ fn reload_job_config() -> (CleanupConfig, PathsConfig, SecretsConfig, bool) {
                 config.paths.clone(),
                 config.secrets.clone(),
                 config.cleanup.enabled,
+                config.voice_commands.clone(),
             )
         },
     )
@@ -447,7 +455,6 @@ async fn start(
     }
     let job_id = JobId::new();
     *state.cleanup_override.lock().await = cleanup;
-    *state.style_override.lock().await = style;
     let target_at_start = voxline_platform::capture_active_target();
     let active_app_profile = Config::load_or_default().ok().and_then(|config| {
         target_at_start.as_ref().and_then(|target| {
@@ -460,6 +467,7 @@ async fn start(
     });
     *state.target_at_start.lock().await = target_at_start;
     *state.active_app_profile.lock().await = active_app_profile;
+    *state.style_override.lock().await = style;
     match state.audio.start(job_id.clone()).await {
         Ok(()) => {
             let status = update_state(state, Some(job_id), JobState::Recording).await;
@@ -548,20 +556,55 @@ async fn finish_dictation(
     let cleanup_override = state.cleanup_override.lock().await.take();
     let style_override = state.style_override.lock().await.take();
     let active_app_profile = state.active_app_profile.lock().await.take();
-    let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, cleanup_enabled, voice_commands_config) =
+        reload_job_config();
+    let prefer_clipboard_only = active_app_profile
+        .as_ref()
+        .and_then(|profile| profile.injection.prefer_clipboard_only)
+        .unwrap_or(false);
+    let voice_command_outcome =
+        apply_voice_commands(&voice_commands_config, &paths_config, &transcript.text);
+    let voice_style_override = voice_command_outcome.voice_style;
+    let raw_text = voice_command_outcome.raw_text;
+    if let Some(name) = voice_command_outcome.snippet_only {
+        return deliver_snippet_from_job(
+            request_id,
+            state,
+            SnippetJobContext {
+                recording,
+                benchmark,
+                target_at_stop,
+                started,
+                paths_config,
+                name,
+                prefer_clipboard_only,
+            },
+        )
+        .await;
+    }
+    if raw_text.trim().is_empty() {
+        let status = update_state(state, None, JobState::Idle).await;
+        return error_response(
+            request_id,
+            "empty_transcript",
+            "transcription produced no usable text after command stripping",
+            Some(status),
+        );
+    }
     let routing = voxline_core::routing::resolve_cleanup_routing(
         style_override.as_deref(),
+        voice_style_override.as_deref(),
         cleanup_override,
         cleanup_enabled,
         &cleanup_config.default_style,
         active_app_profile.as_ref(),
     );
-    let raw_text = transcript.text.clone();
-    let cleanup_outcome = if should_run_cleanup(
+    let cleanup_outcome = if should_run_cleanup_with_voice_style(
         routing.cleanup_enabled,
         cleanup_override,
         &raw_text,
         cleanup_config.skip_if_word_count_below,
+        voice_style_override.is_some(),
     ) {
         update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
         match cleanup::run_cleanup(
@@ -666,7 +709,7 @@ async fn finish_dictation(
 }
 
 async fn test_openrouter(request_id: String, state: &AppState) -> Response {
-    let (cleanup_config, paths_config, secrets_config, _) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, _, _) = reload_job_config();
     if cleanup_config.provider != "openrouter" {
         return state_error(
             request_id,
@@ -677,6 +720,7 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
         .await;
     }
     let routing = voxline_core::routing::resolve_cleanup_routing(
+        None,
         None,
         None,
         cleanup_config.enabled,
@@ -727,7 +771,7 @@ async fn cleanup_preview(
     text: String,
     style: Option<String>,
 ) -> Response {
-    let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, cleanup_enabled, _) = reload_job_config();
     if !cleanup_enabled && cleanup_config.provider == "none" {
         return state_error(
             request_id,
@@ -739,6 +783,7 @@ async fn cleanup_preview(
     }
     let routing = voxline_core::routing::resolve_cleanup_routing(
         style.as_deref(),
+        None,
         None,
         cleanup_enabled,
         &cleanup_config.default_style,
@@ -780,6 +825,158 @@ async fn cleanup_preview(
             .await
         }
     }
+}
+
+struct SnippetJobContext {
+    recording: AudioRecording,
+    benchmark: AsrBenchmark,
+    target_at_stop: Option<voxline_platform::TargetContext>,
+    started: Instant,
+    paths_config: PathsConfig,
+    name: String,
+    prefer_clipboard_only: bool,
+}
+
+struct VoiceCommandOutcome {
+    raw_text: String,
+    voice_style: Option<String>,
+    snippet_only: Option<String>,
+}
+
+fn apply_voice_commands(
+    voice_commands_config: &VoiceCommandsConfig,
+    paths_config: &PathsConfig,
+    transcript: &str,
+) -> VoiceCommandOutcome {
+    let mut outcome = VoiceCommandOutcome {
+        raw_text: transcript.to_owned(),
+        voice_style: None,
+        snippet_only: None,
+    };
+    if !voice_commands_config.enabled {
+        return outcome;
+    }
+    let Ok(registry) = voxline_core::commands::build_command_registry(paths_config) else {
+        tracing::debug!("voice command registry unavailable");
+        return outcome;
+    };
+    let Some(parsed) = voxline_core::commands::parse_voice_command(
+        voice_commands_config,
+        &registry,
+        transcript.trim(),
+    ) else {
+        tracing::debug!(transcript, "no voice command matched transcript");
+        return outcome;
+    };
+    outcome.raw_text.clone_from(&parsed.remainder);
+    match parsed.target {
+        voxline_core::commands::CommandTarget::Style { name } => {
+            outcome.voice_style = Some(name);
+        }
+        voxline_core::commands::CommandTarget::Snippet { name } => {
+            if outcome.raw_text.trim().is_empty() {
+                outcome.snippet_only = Some(name);
+            }
+        }
+    }
+    outcome
+}
+
+async fn deliver_snippet_from_job(
+    request_id: String,
+    state: &AppState,
+    job: SnippetJobContext,
+) -> Response {
+    let SnippetJobContext {
+        recording,
+        benchmark,
+        target_at_stop,
+        started,
+        paths_config,
+        name,
+        prefer_clipboard_only,
+    } = job;
+    let snippet_text = match voxline_core::snippets::load_snippet_content(&paths_config, &name) {
+        Ok(snippet_text) => snippet_text,
+        Err(error) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            return error_response(
+                request_id,
+                "snippet_error",
+                &error.to_string(),
+                Some(status),
+            );
+        }
+    };
+    let delivery = match deliver_text_to_target(
+        state,
+        &recording.job_id,
+        &snippet_text,
+        target_at_stop,
+        started,
+        prefer_clipboard_only,
+    )
+    .await
+    {
+        Ok(delivery) => delivery,
+        Err(message) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            emit_error(
+                state,
+                Some(recording.job_id.clone()),
+                "clipboard_error",
+                &message,
+            );
+            return error_response(request_id, "clipboard_error", &message, Some(status));
+        }
+    };
+    let final_transcript = Transcript {
+        text: snippet_text.clone(),
+        language: None,
+        duration_ms: Some(recording.duration_ms),
+        segments: Vec::new(),
+    };
+    let result = DictationResult {
+        job_id: recording.job_id.clone(),
+        transcript: final_transcript.clone(),
+        benchmark: benchmark.clone(),
+        total_ms: elapsed_ms(started),
+        copied_to_clipboard: delivery.copied_to_clipboard,
+        pasted: delivery.paste_outcome.paste_succeeded,
+        paste_attempted: delivery.paste_outcome.paste_attempted,
+        paste_succeeded: delivery.paste_outcome.paste_succeeded,
+        clipboard_restored: delivery.clipboard_restored,
+        cleanup_used: false,
+        cleanup_failed: false,
+        snippet_used: Some(name),
+        insertion_reason: delivery.paste_outcome.insertion_reason.clone(),
+    };
+    let _ = state.events.send(Event::Result {
+        protocol_version: PROTOCOL_VERSION,
+        timestamp_ms: now_ms(),
+        result,
+    });
+    if state.notifications.enabled {
+        voxline_platform::notify(
+            "VoxLine",
+            if delivery.paste_outcome.paste_succeeded {
+                "Snippet paste command sent"
+            } else if delivery.copied_to_clipboard {
+                "Snippet copied to clipboard"
+            } else {
+                "Snippet ready"
+            },
+        );
+    }
+    update_state(state, Some(recording.job_id.clone()), JobState::Done).await;
+    let status = update_state(state, None, JobState::Idle).await;
+    data_response(
+        request_id,
+        status,
+        Some(recording),
+        Some(final_transcript),
+        Some(benchmark),
+    )
 }
 
 async fn insert_snippet(request_id: String, state: &AppState, name: String) -> Response {

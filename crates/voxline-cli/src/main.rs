@@ -1,5 +1,6 @@
 mod apps_cmd;
 mod cleanup_cmd;
+mod commands_cmd;
 mod secrets_cmd;
 mod service;
 mod snippets_cmd;
@@ -17,6 +18,7 @@ use tokio::{
 use voxline_core::{
     apps,
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
+    commands,
     config::Config,
     paths,
     protocol::{Command, EventKind, PROTOCOL_VERSION, Request, Response, SessionEnvironment},
@@ -117,6 +119,11 @@ enum Commands {
     Snippets {
         #[command(subcommand)]
         command: snippets_cmd::SnippetsCommands,
+    },
+    #[command(name = "commands")]
+    Routing {
+        #[command(subcommand)]
+        command: commands_cmd::CommandsCommands,
     },
 }
 
@@ -224,6 +231,8 @@ struct DoctorReport {
     style_issues: Vec<String>,
     app_issues: Vec<String>,
     snippet_issues: Vec<String>,
+    voice_command_conflicts: Vec<String>,
+    voice_commands_enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -329,6 +338,7 @@ async fn main() -> Result<()> {
             }
             _ => snippets_cmd::run(command)?,
         },
+        Commands::Routing { command } => commands_cmd::run(command)?,
     }
     Ok(())
 }
@@ -599,6 +609,15 @@ async fn doctor(json: bool) -> Result<()> {
             .into_iter()
             .map(|issue| format!("{}: {}", issue.snippet, issue.message))
             .collect(),
+        voice_command_conflicts: commands::build_command_registry(&config.paths)
+            .map(|registry| {
+                commands::detect_command_conflicts(&registry)
+                    .into_iter()
+                    .map(|issue| format!("{}: {}", issue.alias, issue.targets.join(", ")))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        voice_commands_enabled: config.voice_commands.enabled,
     };
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -700,6 +719,21 @@ fn print_doctor(report: &DoctorReport) {
     } else {
         for issue in &report.snippet_issues {
             println!("  snippet issue: {issue}");
+        }
+    }
+    println!(
+        "  voice commands: {} (experimental)",
+        if report.voice_commands_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if report.voice_command_conflicts.is_empty() {
+        println!("  voice command aliases: no conflicts");
+    } else {
+        for issue in &report.voice_command_conflicts {
+            println!("  voice command conflict: {issue}");
         }
     }
     println!("Cleanup:");
