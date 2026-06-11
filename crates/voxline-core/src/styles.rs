@@ -1,6 +1,11 @@
-use std::{fs, path::PathBuf};
+use std::{
+    ffi::OsStr,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{config::PathsConfig, paths};
@@ -10,10 +15,20 @@ pub const DEFAULT_STYLE_NAME: &str = "default";
 const BUNDLED_DEFAULT_TOML: &str = include_str!("../assets/styles/default.toml");
 const BUNDLED_DEFAULT_PROMPT: &str = include_str!("../assets/styles/default.md");
 
+const NEW_STYLE_PROMPT_TEMPLATE: &str = "\
+Rewrite dictated speech into clean text ready to paste.
+Preserve the user's meaning.
+Do not add facts.
+Return only the final text.";
+
 #[derive(Debug, Error)]
 pub enum StyleError {
+    #[error("style name is invalid")]
+    InvalidName,
     #[error("style {0} was not found")]
     NotFound(String),
+    #[error("style {0} already exists")]
+    AlreadyExists(String),
     #[error("style metadata at {path} is invalid: {source}")]
     InvalidMetadata {
         path: PathBuf,
@@ -31,13 +46,32 @@ pub enum StyleError {
     },
     #[error("style prompt at {0} is empty")]
     EmptyPrompt(PathBuf),
+    #[error("failed to launch editor {editor}: {source}")]
+    EditorLaunch {
+        editor: String,
+        source: std::io::Error,
+    },
+    #[error("editor {editor} exited with status {status}")]
+    EditorFailed { editor: String, status: i32 },
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-struct StyleMetadata {
-    name: String,
-    description: String,
-    prompt_file: String,
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StyleMetadata {
+    pub name: String,
+    pub description: String,
+    pub prompt_file: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleSummary {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleValidationIssue {
+    pub style: String,
+    pub message: String,
 }
 
 pub fn ensure_default_style_files(paths: &PathsConfig) -> Result<(), StyleError> {
@@ -51,10 +85,129 @@ pub fn ensure_default_style_files(paths: &PathsConfig) -> Result<(), StyleError>
     Ok(())
 }
 
-pub fn load_style_prompt(paths: &PathsConfig, style_name: &str) -> Result<String, StyleError> {
-    if style_name.trim().is_empty() {
-        return Err(StyleError::NotFound(style_name.into()));
+#[must_use]
+pub fn resolve_style_name(style_override: Option<&str>, default_style: &str) -> String {
+    match style_override
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        Some(name) => name.to_owned(),
+        None => default_style.to_owned(),
     }
+}
+
+pub fn list_styles(paths: &PathsConfig) -> Result<Vec<StyleSummary>, StyleError> {
+    let styles_dir = paths::styles_dir(paths);
+    if !styles_dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut styles = Vec::new();
+    for entry in fs::read_dir(&styles_dir).map_err(|source| StyleError::Read {
+        path: styles_dir.clone(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| StyleError::Read {
+            path: styles_dir.clone(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("toml")) {
+            continue;
+        }
+        let Some(file_stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        let metadata = read_metadata(paths, file_stem)?;
+        styles.push(StyleSummary {
+            name: metadata.name,
+            description: metadata.description,
+        });
+    }
+    styles.sort_by(|left, right| left.name.cmp(&right.name));
+    Ok(styles)
+}
+
+pub fn create_style(
+    paths: &PathsConfig,
+    name: &str,
+    description: Option<&str>,
+) -> Result<(), StyleError> {
+    validate_style_name(name)?;
+    let styles_dir = paths::styles_dir(paths);
+    fs::create_dir_all(&styles_dir).map_err(|source| StyleError::Write {
+        path: styles_dir.clone(),
+        source,
+    })?;
+    let metadata_path = styles_dir.join(format!("{name}.toml"));
+    let prompt_path = styles_dir.join(format!("{name}.md"));
+    if metadata_path.exists() || prompt_path.exists() {
+        return Err(StyleError::AlreadyExists(name.into()));
+    }
+    let metadata = StyleMetadata {
+        name: name.into(),
+        description: description
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("Custom cleanup style.")
+            .into(),
+        prompt_file: format!("{name}.md"),
+    };
+    write_metadata(&metadata_path, &metadata)?;
+    fs::write(&prompt_path, NEW_STYLE_PROMPT_TEMPLATE).map_err(|source| StyleError::Write {
+        path: prompt_path,
+        source,
+    })?;
+    Ok(())
+}
+
+pub fn edit_style(paths: &PathsConfig, name: &str) -> Result<PathBuf, StyleError> {
+    let prompt_path = prompt_path_for_style(paths, name)?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+    let status = Command::new(&editor)
+        .arg(&prompt_path)
+        .status()
+        .map_err(|source| StyleError::EditorLaunch {
+            editor: editor.clone(),
+            source,
+        })?;
+    if !status.success() {
+        return Err(StyleError::EditorFailed {
+            editor,
+            status: status.code().unwrap_or(1),
+        });
+    }
+    validate_style(paths, name)?;
+    Ok(prompt_path)
+}
+
+pub fn validate_style(paths: &PathsConfig, name: &str) -> Result<(), StyleError> {
+    validate_style_name(name)?;
+    let _ = load_style_prompt(paths, name)?;
+    Ok(())
+}
+
+#[must_use]
+pub fn validate_installed_styles(paths: &PathsConfig) -> Vec<StyleValidationIssue> {
+    let Ok(styles) = list_styles(paths) else {
+        return vec![StyleValidationIssue {
+            style: "*".into(),
+            message: "styles directory is unreadable".into(),
+        }];
+    };
+    let mut issues = Vec::new();
+    for style in styles {
+        if let Err(error) = validate_style(paths, &style.name) {
+            issues.push(StyleValidationIssue {
+                style: style.name,
+                message: error.to_string(),
+            });
+        }
+    }
+    issues
+}
+
+pub fn load_style_prompt(paths: &PathsConfig, style_name: &str) -> Result<String, StyleError> {
+    validate_style_name(style_name)?;
     let styles_dir = paths::styles_dir(paths);
     let metadata_path = styles_dir.join(format!("{style_name}.toml"));
     if !metadata_path.is_file() {
@@ -64,6 +217,27 @@ pub fn load_style_prompt(paths: &PathsConfig, style_name: &str) -> Result<String
         }
         return Err(StyleError::NotFound(style_name.into()));
     }
+    let metadata = read_metadata(paths, style_name)?;
+    let prompt_path = styles_dir.join(&metadata.prompt_file);
+    if !prompt_path.is_file() {
+        return Err(StyleError::Read {
+            path: prompt_path,
+            source: std::io::Error::new(std::io::ErrorKind::NotFound, "prompt file missing"),
+        });
+    }
+    let prompt = fs::read_to_string(&prompt_path).map_err(|source| StyleError::Read {
+        path: prompt_path.clone(),
+        source,
+    })?;
+    let prompt = prompt.trim();
+    if prompt.is_empty() {
+        return Err(StyleError::EmptyPrompt(prompt_path));
+    }
+    Ok(prompt.to_owned())
+}
+
+fn read_metadata(paths: &PathsConfig, style_name: &str) -> Result<StyleMetadata, StyleError> {
+    let metadata_path = paths::styles_dir(paths).join(format!("{style_name}.toml"));
     let metadata_text = fs::read_to_string(&metadata_path).map_err(|source| StyleError::Read {
         path: metadata_path.clone(),
         source,
@@ -79,16 +253,36 @@ pub fn load_style_prompt(paths: &PathsConfig, style_name: &str) -> Result<String
             metadata.name
         )));
     }
-    let prompt_path = styles_dir.join(&metadata.prompt_file);
-    let prompt = fs::read_to_string(&prompt_path).map_err(|source| StyleError::Read {
-        path: prompt_path.clone(),
-        source,
+    Ok(metadata)
+}
+
+fn prompt_path_for_style(paths: &PathsConfig, style_name: &str) -> Result<PathBuf, StyleError> {
+    let metadata = read_metadata(paths, style_name)?;
+    Ok(paths::styles_dir(paths).join(metadata.prompt_file))
+}
+
+fn write_metadata(path: &Path, metadata: &StyleMetadata) -> Result<(), StyleError> {
+    let text = toml::to_string_pretty(metadata).map_err(|error| StyleError::Write {
+        path: path.to_path_buf(),
+        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()),
     })?;
-    let prompt = prompt.trim();
-    if prompt.is_empty() {
-        return Err(StyleError::EmptyPrompt(prompt_path));
+    fs::write(path, text).map_err(|source| StyleError::Write {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+fn validate_style_name(name: &str) -> Result<(), StyleError> {
+    let name = name.trim();
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains('\0')
+    {
+        return Err(StyleError::InvalidName);
     }
-    Ok(prompt.to_owned())
+    Ok(())
 }
 
 fn write_if_missing(path: &PathBuf, contents: &str) -> Result<(), StyleError> {
@@ -126,7 +320,35 @@ mod tests {
     }
 
     #[test]
-    fn bundled_default_prompt_matches_asset_file() {
-        assert!(BUNDLED_DEFAULT_PROMPT.contains("Return only the final text."));
+    fn resolve_style_prefers_cli_override() {
+        assert_eq!(
+            resolve_style_name(Some("professional"), "default"),
+            "professional"
+        );
+        assert_eq!(resolve_style_name(None, "default"), "default");
+    }
+
+    #[test]
+    fn create_and_list_styles() {
+        let base = std::env::temp_dir().join(format!("voxline-styles-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        create_style(&paths, "professional", Some("Professional prose.")).unwrap();
+        let styles = list_styles(&paths).unwrap();
+        assert_eq!(styles.len(), 1);
+        assert_eq!(styles[0].name, "professional");
+        validate_style(&paths, "professional").unwrap();
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_duplicate_style_creation() {
+        let base = std::env::temp_dir().join(format!("voxline-styles-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        create_style(&paths, "notes", None).unwrap();
+        assert!(matches!(
+            create_style(&paths, "notes", None),
+            Err(StyleError::AlreadyExists(_))
+        ));
+        let _ = fs::remove_dir_all(&base);
     }
 }

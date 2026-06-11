@@ -505,6 +505,26 @@ impl Config {
                 "paths.runtime_dir cannot be empty".into(),
             ));
         }
+        if self.cleanup.enabled {
+            styles::ensure_default_style_files(&self.paths).map_err(|error| {
+                ConfigError::Validation(format!("default style files: {error}"))
+            })?;
+            styles::validate_style(&self.paths, &self.cleanup.default_style).map_err(|error| {
+                ConfigError::Validation(format!(
+                    "cleanup.default_style '{}': {error}",
+                    self.cleanup.default_style
+                ))
+            })?;
+            if let Some(issue) = styles::validate_installed_styles(&self.paths)
+                .into_iter()
+                .next()
+            {
+                return Err(ConfigError::Validation(format!(
+                    "style {}: {}",
+                    issue.style, issue.message
+                )));
+            }
+        }
         Ok(())
     }
 }
