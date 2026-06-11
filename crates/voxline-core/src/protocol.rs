@@ -39,6 +39,10 @@ pub enum Command {
     InsertSnippet {
         name: String,
     },
+    TemplatePreview {
+        name: String,
+        text: String,
+    },
     Start,
     Stop,
     Cancel,

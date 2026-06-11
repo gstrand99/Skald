@@ -97,15 +97,21 @@ voxline apps edit terminal
 voxline apps validate
 ```
 
-Insert snippets under `snippets/` store reusable static text (no cleanup or LLM):
+Snippets under `snippets/` support static insert content and template snippets:
 
 ```bash
 voxline snippets list
 voxline snippets new signature
+voxline snippets new standup --template
 voxline snippets validate
 voxline snippets insert signature
+voxline snippets preview standup "yesterday I fixed bugs today I'll ship templates blocked nothing"
 voxline toggle --snippet signature
 ```
+
+Insert snippets copy static content directly. Template snippets use OpenRouter JSON
+field extraction and render a `{{field}}` template. Route them with a voice command
+such as `voxline standup ...` when `[voice_commands]` is enabled.
 
 Experimental voice commands (opt-in, disabled by default) parse a required
 prefix at the **start** of the transcript after ASR. The default prefix

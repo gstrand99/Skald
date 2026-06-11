@@ -336,6 +336,9 @@ async fn main() -> Result<()> {
             snippets_cmd::SnippetsCommands::Insert { name } => {
                 print_response(&send(Command::InsertSnippet { name }).await?);
             }
+            snippets_cmd::SnippetsCommands::Preview { name, text } => {
+                print_cleanup_response(&send(Command::TemplatePreview { name, text }).await?);
+            }
             _ => snippets_cmd::run(command)?,
         },
         Commands::Routing { command } => commands_cmd::run(command)?,
