@@ -102,13 +102,41 @@ pub fn list_snippets(paths: &PathsConfig) -> Result<Vec<SnippetSummary>, Snippet
         let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
             continue;
         };
-        let kind = snippet_kind(paths, stem)?;
+        let kind = match snippet_kind(paths, stem) {
+            Ok(kind) => kind,
+            Err(error) => {
+                tracing::warn!(
+                    snippet = stem,
+                    error = %error,
+                    "skipping unreadable snippet metadata file"
+                );
+                continue;
+            }
+        };
         let aliases = match kind {
-            SnippetKind::Insert => read_insert_metadata(paths, stem)?.aliases,
+            SnippetKind::Insert => match read_insert_metadata(paths, stem) {
+                Ok(metadata) => metadata.aliases,
+                Err(error) => {
+                    tracing::warn!(
+                        snippet = stem,
+                        error = %error,
+                        "skipping unreadable snippet metadata file"
+                    );
+                    continue;
+                }
+            },
             SnippetKind::Template => {
-                crate::snippet_templates::load_template_metadata(paths, stem)
-                    .map_err(|error| SnippetError::Validation(error.to_string()))?
-                    .aliases
+                match crate::snippet_templates::load_template_metadata(paths, stem) {
+                    Ok(metadata) => metadata.aliases,
+                    Err(error) => {
+                        tracing::warn!(
+                            snippet = stem,
+                            error = %error,
+                            "skipping unreadable snippet metadata file"
+                        );
+                        continue;
+                    }
+                }
             }
         };
         snippets.push(SnippetSummary {
@@ -177,17 +205,28 @@ pub fn validate_snippet(paths: &PathsConfig, name: &str) -> Result<(), SnippetEr
 
 #[must_use]
 pub fn validate_installed_snippets(paths: &PathsConfig) -> Vec<SnippetValidationIssue> {
-    let Ok(snippets) = list_snippets(paths) else {
+    let snippets_dir = paths::snippets_dir(paths);
+    if !snippets_dir.is_dir() {
+        return Vec::new();
+    }
+    let Ok(entries) = fs::read_dir(&snippets_dir) else {
         return vec![SnippetValidationIssue {
             snippet: "*".into(),
             message: "snippets directory is unreadable".into(),
         }];
     };
     let mut issues = Vec::new();
-    for snippet in snippets {
-        if let Err(error) = validate_snippet(paths, &snippet.name) {
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension() != Some(OsStr::new("toml")) {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if let Err(error) = validate_snippet(paths, stem) {
             issues.push(SnippetValidationIssue {
-                snippet: snippet.name,
+                snippet: stem.into(),
                 message: error.to_string(),
             });
         }
@@ -364,6 +403,19 @@ mod tests {
             SnippetKind::Template
         );
         validate_snippet(&paths, "standup").unwrap();
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn list_snippets_skips_corrupt_file_returns_valid() {
+        let base = std::env::temp_dir().join(format!("voxline-snippets-{}", ulid::Ulid::new()));
+        let paths = temp_paths(&base);
+        create_snippet(&paths, "good").unwrap();
+        let corrupt_path = paths::snippets_dir(&paths).join("bad.toml");
+        fs::write(&corrupt_path, "not valid toml [[[").unwrap();
+        let snippets = list_snippets(&paths).unwrap();
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].name, "good");
         let _ = fs::remove_dir_all(&base);
     }
 }
