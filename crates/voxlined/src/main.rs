@@ -24,14 +24,14 @@ use voxline_core::{
     cleanup::{CleanupOverride, should_run_cleanup},
     config::{
         AudioGatesConfig, AutoPasteMode, CleanupConfig, Config, InjectionConfig,
-        NotificationsConfig, PrivacyConfig, SecretsConfig,
+        NotificationsConfig, PathsConfig, PrivacyConfig, SecretsConfig,
     },
     protocol::{
         AsrBenchmark, AudioRecording, Command, DaemonStatus, DictationResult, Event, JobId,
         JobState, ModelState, PROTOCOL_VERSION, ProtocolError, Request, Response,
         SessionEnvironment, Transcript,
     },
-    runtime::{ensure_runtime_dir, socket_path},
+    runtime::{ensure_runtime_dir_for, socket_path_for},
 };
 
 #[derive(Debug, Parser)]
@@ -66,8 +66,8 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    ensure_runtime_dir()?;
-    let socket = socket_path()?;
+    ensure_runtime_dir_for(&config.paths)?;
+    let socket = socket_path_for(&config.paths)?;
     remove_stale_socket(&socket)?;
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to bind {}", socket.display()))?;
@@ -87,7 +87,7 @@ async fn main() -> Result<()> {
             ..DaemonStatus::default()
         }),
         events,
-        audio: audio::AudioRecorder::spawn(config.audio),
+        audio: audio::AudioRecorder::spawn(config.audio, config.paths.clone()),
         asr: asr::AsrManager::spawn(config.asr, config.vocabulary),
         audio_gates,
         injection: config.injection,
@@ -289,12 +289,20 @@ fn error_response(
     }
 }
 
-fn reload_job_config() -> (CleanupConfig, SecretsConfig, bool) {
+fn reload_job_config() -> (CleanupConfig, PathsConfig, SecretsConfig, bool) {
     Config::load_or_default().map_or_else(
-        |_| (CleanupConfig::default(), SecretsConfig::default(), false),
+        |_| {
+            (
+                CleanupConfig::default(),
+                PathsConfig::default(),
+                SecretsConfig::default(),
+                false,
+            )
+        },
         |config| {
             (
                 config.cleanup.clone(),
+                config.paths.clone(),
                 config.secrets.clone(),
                 config.cleanup.enabled,
             )
@@ -499,7 +507,7 @@ async fn finish_dictation(
     }
 
     let cleanup_override = state.cleanup_override.lock().await.take();
-    let (cleanup_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
     let raw_text = transcript.text.clone();
     let cleanup_outcome = if should_run_cleanup(
         cleanup_enabled,
@@ -508,7 +516,8 @@ async fn finish_dictation(
         cleanup_config.skip_if_word_count_below,
     ) {
         update_state(state, Some(recording.job_id.clone()), JobState::Cleaning).await;
-        match cleanup::run_cleanup(&cleanup_config, &secrets_config, &raw_text).await {
+        match cleanup::run_cleanup(&cleanup_config, &paths_config, &secrets_config, &raw_text).await
+        {
             Ok(outcome) => outcome,
             Err(error) => {
                 warn!(%error, "cleanup failed; falling back to raw transcript");
@@ -613,7 +622,7 @@ async fn finish_dictation(
 }
 
 async fn test_openrouter(request_id: String, state: &AppState) -> Response {
-    let (cleanup_config, secrets_config, _) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, _) = reload_job_config();
     if cleanup_config.provider != "openrouter" {
         return state_error(
             request_id,
@@ -623,7 +632,14 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
         )
         .await;
     }
-    match cleanup::run_cleanup(&cleanup_config, &secrets_config, "VoxLine OpenRouter test").await {
+    match cleanup::run_cleanup(
+        &cleanup_config,
+        &paths_config,
+        &secrets_config,
+        "VoxLine OpenRouter test",
+    )
+    .await
+    {
         Ok(outcome) => {
             let status = state.status.read().await.clone();
             Response {
@@ -653,7 +669,7 @@ async fn test_openrouter(request_id: String, state: &AppState) -> Response {
 }
 
 async fn cleanup_preview(request_id: String, state: &AppState, text: String) -> Response {
-    let (cleanup_config, secrets_config, cleanup_enabled) = reload_job_config();
+    let (cleanup_config, paths_config, secrets_config, cleanup_enabled) = reload_job_config();
     if !cleanup_enabled && cleanup_config.provider == "none" {
         return state_error(
             request_id,
@@ -663,7 +679,7 @@ async fn cleanup_preview(request_id: String, state: &AppState, text: String) -> 
         )
         .await;
     }
-    match cleanup::run_cleanup(&cleanup_config, &secrets_config, &text).await {
+    match cleanup::run_cleanup(&cleanup_config, &paths_config, &secrets_config, &text).await {
         Ok(outcome) => {
             let status = state.status.read().await.clone();
             Response {

@@ -1,0 +1,135 @@
+# VoxLine default Linux configuration.
+#
+# Copy to ~/.config/voxline/config.toml or run:
+#   voxline config init
+#
+# Validate after edits:
+#   voxline config validate
+#   voxline doctor
+
+[daemon]
+log_level = "info"
+max_concurrent_jobs = 1
+protocol_version = 1
+
+[paths]
+config_dir = "~/.config/voxline"
+model_dir = "~/.local/share/voxline/models"
+# "auto" uses $XDG_RUNTIME_DIR/voxline (recommended on Linux).
+runtime_dir = "auto"
+
+[audio]
+backend = "cpal"
+device = "default"
+target_sample_rate = 16000
+channels = 1
+max_record_seconds = 300
+
+[audio.gates]
+# Recordings shorter than this or below the energy thresholds are treated as no speech.
+min_record_ms = 350
+min_rms_energy = 0.003
+min_peak_energy = 0.015
+notify_on_no_speech = true
+
+[asr]
+backend = "whisper_rs"
+model_path = "~/.local/share/voxline/models/ggml-large-v3-turbo-q5_0.bin"
+language = "en"
+threads = 8
+gpu = true
+gpu_backend = "cuda"
+
+[asr.lifecycle]
+# keep_warm: load at daemon start and reuse between jobs.
+# on_demand: load per job (lower idle memory; higher latency).
+mode = "keep_warm"
+warm_on_daemon_start = true
+idle_unload_seconds = 900
+
+[asr.hallucination_filter]
+enabled = true
+phrases = [
+    "thank you.",
+    "thanks for watching.",
+    "subtitles by",
+    "subtitle by",
+    "captioned by",
+]
+
+[vocabulary]
+enabled = true
+initial_prompt_enabled = true
+post_replace_enabled = true
+
+[[vocabulary.phrases]]
+text = "OpenRouter"
+
+[[vocabulary.phrases]]
+text = "Hyprland"
+
+[[vocabulary.phrases]]
+text = "VoxLine"
+
+[[vocabulary.replacements]]
+from = "hyper land"
+to = "Hyprland"
+case_sensitive = false
+
+[[vocabulary.replacements]]
+from = "open router"
+to = "OpenRouter"
+case_sensitive = false
+
+[cleanup]
+# Cleanup is opt-in. Audio stays local; transcript text is sent to the provider when enabled.
+enabled = false
+provider = "none"
+# Default OpenRouter model when cleanup is enabled (voxline cleanup enable openrouter).
+model = "~openai/gpt-mini-latest"
+# Cleanup prompt style under paths.config_dir/styles/ (see styles/default.toml).
+default_style = "default"
+temperature = 0.2
+timeout_ms = 10000
+fallback_to_raw_on_error = true
+skip_if_word_count_below = 5
+
+# To enable: voxline cleanup enable openrouter
+# (sets provider = "openrouter" and leaves model as above)
+
+[secrets]
+# API keys are not stored in config.toml. Use:
+#   voxline secrets set openrouter
+# Lookup order: keyring → OPENROUTER_API_KEY env → optional file fallback.
+mode = "auto"
+openrouter_env_var = "OPENROUTER_API_KEY"
+allow_insecure_file_fallback = false
+insecure_file_path = "~/.config/voxline/secrets.toml"
+
+[injection]
+copy_to_clipboard = true
+# off | safe | always
+auto_paste = "safe"
+max_paste_age_ms = 5000
+restore_clipboard = true
+paste_delay_ms = 120
+fallback_to_clipboard_only = true
+notify_on_clipboard_only = true
+
+[injection.linux]
+session = "auto"
+wayland_paste_command = "wtype -M ctrl -k v -m ctrl"
+x11_paste_command = "xdotool key ctrl+v"
+# clipboard_only | custom
+gnome_wayland_mode = "clipboard_only"
+optional_paste_command = ""
+
+[notifications]
+enabled = true
+
+[privacy]
+store_history = false
+store_audio = false
+store_raw_transcript = false
+store_cleaned_transcript = false
+log_transcripts = false

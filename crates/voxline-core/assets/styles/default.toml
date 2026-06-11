@@ -1,0 +1,3 @@
+name = "default"
+description = "Clean dictated speech for pasting."
+prompt_file = "default.md"

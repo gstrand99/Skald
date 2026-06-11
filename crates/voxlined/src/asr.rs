@@ -148,7 +148,7 @@ impl Worker {
         if self.context.is_some() {
             return Ok(0);
         }
-        let path = expand_home(&self.config.model_path);
+        let path = voxline_core::paths::expand_home(&self.config.model_path);
         if !path.is_file() {
             return Err(AsrError::ModelNotFound { path });
         }
@@ -365,15 +365,6 @@ fn filter_hallucination(input: &str, config: &AsrConfig) -> String {
     } else {
         input.to_owned()
     }
-}
-
-fn expand_home(path: &str) -> PathBuf {
-    if let Some(relative) = path.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(relative);
-    }
-    PathBuf::from(path)
 }
 
 fn centiseconds_to_ms(value: i64) -> u64 {

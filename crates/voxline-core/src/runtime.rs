@@ -6,9 +6,11 @@ use std::{
 
 use thiserror::Error;
 
+use crate::{config::PathsConfig, paths};
+
 #[derive(Debug, Error)]
 pub enum RuntimeError {
-    #[error("XDG_RUNTIME_DIR is unavailable; configure an alternate runtime directory explicitly")]
+    #[error("XDG_RUNTIME_DIR is unavailable; configure paths.runtime_dir explicitly")]
     MissingXdgRuntimeDir,
     #[error("runtime path is not owned by the current user: {0}")]
     NotOwned(PathBuf),
@@ -19,17 +21,33 @@ pub enum RuntimeError {
     },
 }
 
-pub fn runtime_dir() -> Result<PathBuf, RuntimeError> {
+pub fn xdg_runtime_dir() -> Result<PathBuf, RuntimeError> {
     let base = env::var_os("XDG_RUNTIME_DIR").ok_or(RuntimeError::MissingXdgRuntimeDir)?;
     Ok(PathBuf::from(base).join("voxline"))
 }
 
+pub fn runtime_dir() -> Result<PathBuf, RuntimeError> {
+    runtime_dir_for(&PathsConfig::default())
+}
+
+pub fn runtime_dir_for(paths: &PathsConfig) -> Result<PathBuf, RuntimeError> {
+    paths::resolve_runtime_dir(paths)
+}
+
 pub fn socket_path() -> Result<PathBuf, RuntimeError> {
-    Ok(runtime_dir()?.join("voxlined.sock"))
+    socket_path_for(&PathsConfig::default())
+}
+
+pub fn socket_path_for(paths: &PathsConfig) -> Result<PathBuf, RuntimeError> {
+    Ok(runtime_dir_for(paths)?.join("voxlined.sock"))
 }
 
 pub fn ensure_runtime_dir() -> Result<PathBuf, RuntimeError> {
-    let path = runtime_dir()?;
+    ensure_runtime_dir_for(&PathsConfig::default())
+}
+
+pub fn ensure_runtime_dir_for(paths: &PathsConfig) -> Result<PathBuf, RuntimeError> {
+    let path = runtime_dir_for(paths)?;
     fs::create_dir_all(&path).map_err(|source| RuntimeError::Io {
         path: path.clone(),
         source,
