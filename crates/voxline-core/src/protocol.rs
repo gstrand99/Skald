@@ -159,6 +159,8 @@ pub struct AudioRecording {
     pub rms_energy: f32,
     pub peak_energy: f32,
     pub speech_detected: bool,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,17 +5,23 @@
 )]
 
 use std::{
+    collections::VecDeque,
     fs,
     path::{Path, PathBuf},
-    sync::mpsc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, RecvTimeoutError},
+    },
     thread,
     time::{Duration, Instant},
 };
 
 use cpal::{
-    Device, SampleFormat, Stream, StreamConfig,
+    Device, SampleFormat, Stream, StreamConfig, StreamError,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
+use rubato::{Fft, FixedSync, Resampler, audioadapter_buffers::direct::SequentialSliceOfVecs};
 use thiserror::Error;
 use tokio::sync::oneshot;
 use voxline_core::{
@@ -44,11 +50,13 @@ pub enum AudioError {
     OwnerStopped,
     #[error("audio processing failed: {0}")]
     Processing(String),
+    #[error("audio input stream failed: {message}")]
+    StreamFailed { message: String },
 }
 
 #[derive(Clone)]
 pub struct RecordingTap {
-    samples: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    preview_ring: Arc<Mutex<VecDeque<f32>>>,
     sample_rate: u32,
     channels: u16,
     target_sample_rate: u32,
@@ -62,20 +70,20 @@ impl RecordingTap {
     }
 
     pub fn resampled_snapshot(&self) -> Vec<f32> {
-        let raw = self
-            .samples
+        let raw: Vec<f32> = self
+            .preview_ring
             .lock()
-            .map(|samples| samples.clone())
+            .map(|ring| ring.iter().copied().collect())
             .unwrap_or_default();
         let mono = mix_to_mono(&raw, self.channels);
-        let resampled = resample_linear(&mono, self.sample_rate, self.target_sample_rate);
+        let resampled = resample(&mono, self.sample_rate, self.target_sample_rate);
         voxline_core::preview::trim_to_ring_buffer(resampled, self.max_samples)
     }
 }
 
 pub struct AudioRecorder {
     commands: mpsc::Sender<OwnerCommand>,
-    tap: std::sync::Arc<std::sync::Mutex<Option<RecordingTap>>>,
+    tap: Arc<Mutex<Option<RecordingTap>>>,
 }
 
 enum OwnerCommand {
@@ -99,14 +107,17 @@ struct ActiveRecording {
     started_at: Instant,
     sample_rate: u32,
     channels: u16,
-    samples: std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    samples: Arc<Mutex<Vec<f32>>>,
+    preview_ring: Option<Arc<Mutex<VecDeque<f32>>>>,
+    truncated: Arc<AtomicBool>,
+    stream_error: Arc<Mutex<Option<String>>>,
     stream: Stream,
 }
 
 impl AudioRecorder {
     pub fn spawn(config: AudioConfig, paths: PathsConfig) -> Self {
         let (commands, receiver) = mpsc::channel();
-        let tap = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let tap = Arc::new(Mutex::new(None));
         let tap_for_owner = tap.clone();
         thread::Builder::new()
             .name("voxline-audio-owner".into())
@@ -157,10 +168,29 @@ fn owner_loop(
     config: AudioConfig,
     paths: PathsConfig,
     receiver: mpsc::Receiver<OwnerCommand>,
-    tap_slot: std::sync::Arc<std::sync::Mutex<Option<RecordingTap>>>,
+    tap_slot: Arc<Mutex<Option<RecordingTap>>>,
 ) {
     let mut active: Option<ActiveRecording> = None;
-    while let Ok(command) = receiver.recv() {
+    let mut stream_failure: Option<(JobId, String)> = None;
+
+    loop {
+        let command = if active.is_some() {
+            match receiver.recv_timeout(Duration::from_millis(500)) {
+                Ok(command) => Some(command),
+                Err(RecvTimeoutError::Timeout) => {
+                    handle_active_stream_error(&mut active, &tap_slot, &mut stream_failure);
+                    continue;
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            }
+        } else {
+            receiver.recv().ok()
+        };
+
+        let Some(command) = command else {
+            break;
+        };
+
         match command {
             OwnerCommand::Start {
                 job_id,
@@ -170,21 +200,25 @@ fn owner_loop(
                 let result = if active.is_some() {
                     Err(AudioError::AlreadyRecording)
                 } else {
-                    start_recording(job_id, &config).map(|recording| {
-                        if let Some(seconds) = preview_ring_buffer_seconds
-                            && let Ok(mut slot) = tap_slot.lock()
-                        {
+                    start_recording(job_id, &config, preview_ring_buffer_seconds).map(|recording| {
+                        if let Some(seconds) = preview_ring_buffer_seconds {
+                            let preview_ring = recording
+                                .preview_ring
+                                .clone()
+                                .expect("preview ring exists when preview is enabled");
                             let max_samples = usize::try_from(
                                 seconds.saturating_mul(u64::from(config.target_sample_rate)),
                             )
                             .unwrap_or(usize::MAX);
-                            *slot = Some(RecordingTap {
-                                samples: recording.samples.clone(),
-                                sample_rate: recording.sample_rate,
-                                channels: recording.channels,
-                                target_sample_rate: config.target_sample_rate,
-                                max_samples,
-                            });
+                            if let Ok(mut slot) = tap_slot.lock() {
+                                *slot = Some(RecordingTap {
+                                    preview_ring,
+                                    sample_rate: recording.sample_rate,
+                                    channels: recording.channels,
+                                    target_sample_rate: config.target_sample_rate,
+                                    max_samples,
+                                });
+                            }
                         }
                         active = Some(recording);
                     })
@@ -192,16 +226,28 @@ fn owner_loop(
                 let _ = reply.send(result);
             }
             OwnerCommand::Stop { job_id, reply } => {
-                let result = take_matching(&mut active, &job_id).and_then(|recording| {
-                    if let Ok(mut slot) = tap_slot.lock() {
-                        *slot = None;
-                    }
-                    finish_recording(recording, &config, &paths)
-                });
+                let result = if let Some(error) =
+                    take_pending_stream_failure(&mut stream_failure, &job_id)
+                {
+                    Err(error)
+                } else {
+                    take_matching(&mut active, &job_id).and_then(|recording| {
+                        if let Ok(mut slot) = tap_slot.lock() {
+                            *slot = None;
+                        }
+                        finish_recording(recording, &config, &paths)
+                    })
+                };
                 let _ = reply.send(result);
             }
             OwnerCommand::Cancel { job_id, reply } => {
-                let result = take_matching(&mut active, &job_id).map(drop);
+                let result = if let Some(error) =
+                    take_pending_stream_failure(&mut stream_failure, &job_id)
+                {
+                    Err(error)
+                } else {
+                    take_matching(&mut active, &job_id).map(drop)
+                };
                 if let Ok(mut slot) = tap_slot.lock() {
                     *slot = None;
                 }
@@ -209,6 +255,42 @@ fn owner_loop(
             }
         }
     }
+}
+
+fn take_pending_stream_failure(
+    pending: &mut Option<(JobId, String)>,
+    job_id: &JobId,
+) -> Option<AudioError> {
+    if pending.as_ref().is_some_and(|(id, _)| id == job_id) {
+        let (_, message) = pending.take().unwrap();
+        Some(AudioError::StreamFailed { message })
+    } else {
+        None
+    }
+}
+
+fn handle_active_stream_error(
+    active: &mut Option<ActiveRecording>,
+    tap_slot: &Arc<Mutex<Option<RecordingTap>>>,
+    pending: &mut Option<(JobId, String)>,
+) {
+    let Some(recording) = active.as_ref() else {
+        return;
+    };
+    let message = recording
+        .stream_error
+        .lock()
+        .ok()
+        .and_then(|slot| slot.clone());
+    let Some(message) = message else {
+        return;
+    };
+    let job_id = recording.job_id.clone();
+    active.take();
+    if let Ok(mut slot) = tap_slot.lock() {
+        *slot = None;
+    }
+    *pending = Some((job_id, message));
 }
 
 fn take_matching(
@@ -222,7 +304,24 @@ fn take_matching(
     active.take().ok_or(AudioError::NotRecording)
 }
 
-fn start_recording(job_id: JobId, config: &AudioConfig) -> Result<ActiveRecording, AudioError> {
+fn max_capture_samples(max_record_seconds: u64, sample_rate: u32, channels: u16) -> usize {
+    usize::try_from(
+        max_record_seconds
+            .saturating_mul(u64::from(sample_rate))
+            .saturating_mul(u64::from(channels)),
+    )
+    .unwrap_or(usize::MAX)
+}
+
+fn preview_ring_capacity(preview_seconds: u64, sample_rate: u32, channels: u16) -> usize {
+    max_capture_samples(preview_seconds, sample_rate, channels)
+}
+
+fn start_recording(
+    job_id: JobId,
+    config: &AudioConfig,
+    preview_ring_buffer_seconds: Option<u64>,
+) -> Result<ActiveRecording, AudioError> {
     let host = cpal::default_host();
     let device = if config.device == "default" {
         host.default_input_device()
@@ -238,37 +337,116 @@ fn start_recording(job_id: JobId, config: &AudioConfig) -> Result<ActiveRecordin
         .map_err(|error| AudioError::InputConfig(error.to_string()))?;
     let sample_format = supported.sample_format();
     let stream_config: StreamConfig = supported.into();
-    let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let stream = build_stream(&device, &stream_config, sample_format, &samples)?;
+    let sample_rate = stream_config.sample_rate.0;
+    let channels = stream_config.channels;
+    let max_samples_cap = max_capture_samples(config.max_record_seconds, sample_rate, channels);
+    let preview_ring = preview_ring_buffer_seconds.map(|seconds| {
+        Arc::new(Mutex::new(VecDeque::with_capacity(preview_ring_capacity(
+            seconds,
+            sample_rate,
+            channels,
+        ))))
+    });
+    let preview_ring_cap = preview_ring_buffer_seconds.map_or(0, |seconds| {
+        preview_ring_capacity(seconds, sample_rate, channels)
+    });
+    let samples = Arc::new(Mutex::new(Vec::new()));
+    let truncated = Arc::new(AtomicBool::new(false));
+    let stream_error = Arc::new(Mutex::new(None));
+    let capture_context = CaptureContext {
+        samples: &samples,
+        max_samples_cap,
+        truncated: &truncated,
+        preview_ring: preview_ring.as_ref(),
+        preview_ring_cap,
+    };
+    let stream = build_stream(
+        &device,
+        &stream_config,
+        sample_format,
+        &capture_context,
+        stream_error.clone(),
+    )?;
     stream
         .play()
         .map_err(|error| AudioError::PlayStream(error.to_string()))?;
     Ok(ActiveRecording {
         job_id,
         started_at: Instant::now(),
-        sample_rate: stream_config.sample_rate.0,
-        channels: stream_config.channels,
+        sample_rate,
+        channels,
         samples,
+        preview_ring,
+        truncated,
+        stream_error,
         stream,
     })
+}
+
+struct CaptureContext<'a> {
+    samples: &'a Arc<Mutex<Vec<f32>>>,
+    max_samples_cap: usize,
+    truncated: &'a Arc<AtomicBool>,
+    preview_ring: Option<&'a Arc<Mutex<VecDeque<f32>>>>,
+    preview_ring_cap: usize,
+}
+
+fn append_capture_samples(context: &CaptureContext<'_>, converted: &[f32]) {
+    if let Ok(mut output) = context.samples.lock() {
+        for &sample in converted {
+            if output.len() < context.max_samples_cap {
+                output.push(sample);
+            } else if !context.truncated.swap(true, Ordering::Relaxed) {
+                tracing::warn!("recording reached configured maximum length");
+            }
+        }
+    }
+    if let Some(ring) = context.preview_ring
+        && let Ok(mut ring) = ring.lock()
+    {
+        for &sample in converted {
+            ring.push_back(sample);
+            while ring.len() > context.preview_ring_cap {
+                ring.pop_front();
+            }
+        }
+    }
 }
 
 fn build_stream(
     device: &Device,
     config: &StreamConfig,
     format: SampleFormat,
-    samples: &std::sync::Arc<std::sync::Mutex<Vec<f32>>>,
+    context: &CaptureContext<'_>,
+    stream_error: Arc<Mutex<Option<String>>>,
 ) -> Result<Stream, AudioError> {
-    let error_callback = |error| tracing::warn!(%error, "audio input stream error");
+    let error_callback = move |error: StreamError| {
+        tracing::warn!(%error, "audio input stream error");
+        if let Ok(mut slot) = stream_error.lock()
+            && slot.is_none()
+        {
+            *slot = Some(error.to_string());
+        }
+    };
     macro_rules! stream {
         ($sample:ty, $convert:expr) => {{
-            let samples = samples.clone();
+            let samples = context.samples.clone();
+            let max_samples_cap = context.max_samples_cap;
+            let truncated = context.truncated.clone();
+            let preview_ring = context.preview_ring.cloned();
+            let preview_ring_cap = context.preview_ring_cap;
             device.build_input_stream(
                 config,
                 move |data: &[$sample], _| {
-                    if let Ok(mut output) = samples.lock() {
-                        output.extend(data.iter().copied().map($convert));
-                    }
+                    let capture = CaptureContext {
+                        samples: &samples,
+                        max_samples_cap,
+                        truncated: &truncated,
+                        preview_ring: preview_ring.as_ref(),
+                        preview_ring_cap,
+                    };
+                    let converted: Vec<f32> = data.iter().copied().map($convert).collect();
+                    append_capture_samples(&capture, &converted);
                 },
                 error_callback,
                 None,
@@ -312,16 +490,19 @@ fn finish_recording(
         sample_rate,
         channels,
         samples,
+        truncated,
         stream,
+        ..
     } = recording;
+    // Dropping the stream stops the CPAL callback; the sample mutex serializes any in-flight
+    // append, so no extra drain delay is required before reading the buffer.
     drop(stream);
-    thread::sleep(Duration::from_millis(20));
     let samples = samples
         .lock()
         .map_err(|_| AudioError::Processing("audio sample buffer was poisoned".into()))?
         .clone();
     let mono = mix_to_mono(&samples, channels);
-    let resampled = resample_linear(&mono, sample_rate, config.target_sample_rate);
+    let resampled = resample(&mono, sample_rate, config.target_sample_rate);
     let (rms_energy, peak_energy) = energy(&resampled);
     let duration_ms = samples_to_duration_ms(resampled.len(), config.target_sample_rate);
     let speech_detected = duration_ms >= config.gates.min_record_ms
@@ -341,6 +522,7 @@ fn finish_recording(
         rms_energy,
         peak_energy,
         speech_detected,
+        truncated: truncated.load(Ordering::Relaxed),
     })
 }
 
@@ -352,20 +534,26 @@ fn mix_to_mono(samples: &[f32], channels: u16) -> Vec<f32> {
         .collect()
 }
 
-fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
+fn resample(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f32> {
     if samples.is_empty() || source_rate == target_rate {
         return samples.to_vec();
     }
-    let output_len = samples.len().saturating_mul(target_rate as usize) / source_rate as usize;
-    (0..output_len)
-        .map(|index| {
-            let source_position = index as f64 * f64::from(source_rate) / f64::from(target_rate);
-            let lower = source_position.floor() as usize;
-            let upper = (lower + 1).min(samples.len() - 1);
-            let fraction = (source_position - lower as f64) as f32;
-            samples[lower] + (samples[upper] - samples[lower]) * fraction
-        })
-        .collect()
+    let source_rate = usize::try_from(source_rate).unwrap_or(usize::MAX);
+    let target_rate = usize::try_from(target_rate).unwrap_or(usize::MAX);
+    let mut resampler = Fft::<f32>::new(source_rate, target_rate, 1024, 1, 1, FixedSync::Both)
+        .expect("supported sample rates should construct an FFT resampler");
+    let input_data = vec![samples.to_vec()];
+    let input =
+        SequentialSliceOfVecs::new(&input_data, 1, samples.len()).expect("mono input adapter");
+    let output_len = resampler.process_all_needed_output_len(samples.len());
+    let mut output_data = vec![vec![0.0f32; output_len]];
+    let mut output_adapter = SequentialSliceOfVecs::new_mut(&mut output_data, 1, output_len)
+        .expect("mono output adapter");
+    let (_, written) = resampler
+        .process_all_into_buffer(&input, &mut output_adapter, samples.len(), None)
+        .expect("FFT resampling should succeed for in-memory mono audio");
+    output_data[0].truncate(written);
+    output_data[0].clone()
 }
 
 fn energy(samples: &[f32]) -> (f32, f32) {
@@ -414,7 +602,7 @@ pub fn recording_from_existing_wav(
         }
     };
     let mono = mix_to_mono(&samples, channels);
-    let resampled = resample_linear(&mono, spec.sample_rate, target_sample_rate);
+    let resampled = resample(&mono, spec.sample_rate, target_sample_rate);
     let (rms_energy, peak_energy) = energy(&resampled);
     let duration_ms = samples_to_duration_ms(resampled.len(), target_sample_rate);
     let speech_detected = duration_ms >= gates.min_record_ms
@@ -429,6 +617,7 @@ pub fn recording_from_existing_wav(
         rms_energy,
         peak_energy,
         speech_detected,
+        truncated: false,
     })
 }
 
@@ -466,8 +655,29 @@ mod tests {
 
     #[test]
     fn resamples_to_requested_rate() {
-        let input = vec![0.0; 48_000];
-        assert_eq!(resample_linear(&input, 48_000, 16_000).len(), 16_000);
+        let sample_rate = 48_000;
+        let target_rate = 16_000;
+        let input: Vec<f32> = (0..sample_rate)
+            .map(|index| {
+                (std::f32::consts::TAU * 1_000.0 * index as f32 / sample_rate as f32).sin()
+            })
+            .collect();
+        let output = resample(&input, sample_rate, target_rate);
+        let expected_len = sample_rate as usize * target_rate as usize / sample_rate as usize;
+        let tolerance = (expected_len / 100).max(1);
+        assert!(
+            output.len().abs_diff(expected_len) <= tolerance,
+            "expected length near {expected_len}, got {}",
+            output.len()
+        );
+        let peak = output
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0f32, f32::max);
+        assert!(
+            peak > 0.1,
+            "resampled sine should retain energy, peak={peak}"
+        );
     }
 
     #[test]
@@ -475,5 +685,24 @@ mod tests {
         let (rms, peak) = energy(&[0.5, -0.5]);
         assert!((rms - 0.5).abs() < f32::EPSILON);
         assert!((peak - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn take_pending_stream_failure_returns_error_for_matching_job() {
+        let job_id = JobId::new();
+        let mut pending = Some((job_id.clone(), "device unplugged".into()));
+        let error = take_pending_stream_failure(&mut pending, &job_id)
+            .expect("matching job should return stream failure");
+        assert!(matches!(error, AudioError::StreamFailed { .. }));
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn take_pending_stream_failure_ignores_other_jobs() {
+        let active_job = JobId::new();
+        let other_job = JobId::new();
+        let mut pending = Some((active_job, "device unplugged".into()));
+        assert!(take_pending_stream_failure(&mut pending, &other_job).is_none());
+        assert!(pending.is_some());
     }
 }
