@@ -21,7 +21,13 @@ idle_unload_seconds = 900
 
 [asr.hallucination_filter]
 enabled = true
-phrases = [ "thank you.", "thanks for watching." ]
+phrases = [
+  "thank you.",
+  "thanks for watching.",
+  "subtitles by*",
+  "subtitle by*",
+  "captioned by*",
+]
 ```
 
 ## `[asr]` options
@@ -45,12 +51,19 @@ phrases = [ "thank you.", "thanks for watching." ]
 
 ## `[asr.hallucination_filter]` options
 
-Filters exact-match hallucination phrases Whisper sometimes emits on silence or noise.
+Filters hallucination phrases Whisper sometimes emits on silence or noise. The filter
+applies only to transcripts of **five words or fewer**; longer output is never dropped
+by this check.
+
+Each phrase is compared after normalization: internal whitespace is collapsed,
+case is folded to lowercase, and leading or trailing punctuation is stripped.
+A phrase ending in `*` is a **prefix** matcher (`*` is removed before normalization);
+all other phrases require an **exact** normalized match.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `enabled` | boolean | `true` | When true, drop transcripts that match a listed phrase exactly (after trimming). |
-| `phrases` | array of strings | see defaults | Phrases to treat as empty output. Default list includes common YouTube-style artifacts. |
+| `enabled` | boolean | `true` | When true, drop short transcripts that match a listed phrase. |
+| `phrases` | array of strings | see defaults | Phrases to treat as empty output. Suffix `*` for prefix match; otherwise exact after normalization. |
 
 Default phrases:
 
@@ -58,9 +71,9 @@ Default phrases:
 phrases = [
   "thank you.",
   "thanks for watching.",
-  "subtitles by",
-  "subtitle by",
-  "captioned by",
+  "subtitles by*",
+  "subtitle by*",
+  "captioned by*",
 ]
 ```
 

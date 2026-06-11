@@ -6,6 +6,10 @@ description: config.toml location, validation, profiles, and directory layout.
 VoxLine uses a single TOML file at `~/.config/voxline/config.toml`. If the file is
 missing, the daemon and CLI use the same built-in defaults as `voxline config init`.
 
+This path is fixed: `paths.config_dir` relocates styles, apps, and snippets only,
+not `config.toml` itself (the bootstrap loader cannot read a path from a file it has
+not yet loaded).
+
 ## Commands
 
 ```bash
@@ -48,8 +52,9 @@ A commented reference copy ships in the repository:
 
 ## Preset profiles
 
-Profiles replace most settings while preserving your `[secrets]` and `[cleanup]`
-entries (except `cpu-safe`, which disables cleanup):
+`power-user-nvidia` resets nearly the entire config to built-in defaults,
+preserving only `[secrets]` and `[cleanup]`. `cpu-safe` applies CPU-safe ASR and
+lifecycle settings and disables cleanup without a full reset.
 
 ```bash
 voxline config profile power-user-nvidia

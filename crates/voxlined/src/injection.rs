@@ -100,15 +100,20 @@ fn check_paste_safety(
     {
         return Err(PasteUnsafeReason::TerminalUnsafe);
     }
-    if *auto_paste == AutoPasteMode::Safe {
-        if elapsed_ms > max_paste_age_ms {
-            return Err(PasteUnsafeReason::Stale);
-        }
-        if !targets_are_stable(target_at_start, target_at_stop, target_before_paste) {
-            return Err(PasteUnsafeReason::TargetChanged);
-        }
+    if elapsed_ms > max_paste_age_ms {
+        return Err(PasteUnsafeReason::Stale);
+    }
+    if *auto_paste == AutoPasteMode::Safe
+        && !targets_are_stable(target_at_start, target_at_stop, target_before_paste)
+    {
+        return Err(PasteUnsafeReason::TargetChanged);
     }
     Ok(())
+}
+
+#[must_use]
+fn same_target(a: &TargetContext, b: &TargetContext) -> bool {
+    a.backend == b.backend && a.id == b.id && a.app_id == b.app_id
 }
 
 #[must_use]
@@ -169,7 +174,12 @@ pub fn targets_are_stable(
     stop: Option<&TargetContext>,
     before_paste: Option<&TargetContext>,
 ) -> bool {
-    start.is_some() && start == stop && stop == before_paste
+    match (start, stop, before_paste) {
+        (Some(start), Some(stop), Some(before_paste)) => {
+            same_target(start, stop) && same_target(stop, before_paste)
+        }
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -183,6 +193,13 @@ mod tests {
             id: id.into(),
             app_id: Some("app".into()),
             title: Some("title".into()),
+        }
+    }
+
+    fn target_with_title(id: &str, title: &str) -> TargetContext {
+        TargetContext {
+            title: Some(title.into()),
+            ..target(id)
         }
     }
 
@@ -208,6 +225,35 @@ mod tests {
             Some(&target("0x2"))
         ));
         assert!(!targets_are_stable(None, None, None));
+    }
+
+    #[test]
+    fn title_only_changes_are_stable() {
+        assert!(targets_are_stable(
+            Some(&target_with_title("0x1", "doc.md")),
+            Some(&target_with_title("0x1", "doc.md*")),
+            Some(&target_with_title("0x1", "doc.md — saved"))
+        ));
+    }
+
+    #[test]
+    fn identity_changes_are_unstable() {
+        assert!(!targets_are_stable(
+            Some(&target("0x1")),
+            Some(&TargetContext {
+                app_id: Some("other-app".into()),
+                ..target("0x1")
+            }),
+            Some(&TargetContext {
+                app_id: Some("other-app".into()),
+                ..target("0x1")
+            })
+        ));
+        assert!(!targets_are_stable(
+            Some(&target("0x1")),
+            Some(&target("0x2")),
+            Some(&target("0x2"))
+        ));
     }
 
     #[test]
@@ -284,6 +330,41 @@ mod tests {
                 5_000
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn always_mode_enforces_staleness_but_not_target_stability() {
+        let unstable = (
+            Some(&target("0x1")),
+            Some(&target("0x2")),
+            Some(&target("0x2")),
+        );
+        assert!(
+            evaluate_paste_safety(
+                &AutoPasteMode::Always,
+                Some(PasteBackend::Hyprland),
+                unstable.0,
+                unstable.1,
+                unstable.2,
+                0,
+                5_000
+            )
+            .is_none()
+        );
+        assert_eq!(
+            evaluate_paste_safety(
+                &AutoPasteMode::Always,
+                Some(PasteBackend::Hyprland),
+                unstable.0,
+                unstable.1,
+                unstable.2,
+                6_000,
+                5_000
+            )
+            .expect("outcome")
+            .warning_code,
+            Some("paste_unsafe_stale")
         );
     }
 

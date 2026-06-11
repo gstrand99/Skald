@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::PathsConfig;
 
@@ -12,9 +12,32 @@ pub fn expand_home(path: &str) -> PathBuf {
         dirs::home_dir().map_or_else(|| PathBuf::from(path), |home| home.join(relative))
     } else if path == "~" {
         dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
+    } else if let Some(relative) = path.strip_prefix("$HOME/") {
+        dirs::home_dir().map_or_else(|| PathBuf::from(path), |home| home.join(relative))
+    } else if path == "$HOME" {
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from(path))
     } else {
         PathBuf::from(path)
     }
+}
+
+#[must_use]
+pub fn to_tilde(path: &Path, model_dir: &Path, model_dir_tilde: &str) -> String {
+    if let Ok(relative) = path.strip_prefix(model_dir)
+        && let Some(file_name) = relative.file_name()
+    {
+        return format!(
+            "{}/{}",
+            model_dir_tilde.trim_end_matches('/'),
+            file_name.to_string_lossy()
+        );
+    }
+    if let Some(home) = dirs::home_dir()
+        && let Ok(relative) = path.strip_prefix(home)
+    {
+        return format!("~/{}", relative.display()).replace('\\', "/");
+    }
+    path.display().to_string()
 }
 
 #[must_use]
@@ -73,6 +96,41 @@ pub fn layout_is_scaffolded(paths: &PathsConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expand_home_handles_dollar_home_prefix() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        assert_eq!(
+            expand_home("$HOME/.config/voxline"),
+            home.join(".config/voxline")
+        );
+        assert_eq!(expand_home("$HOME"), home);
+    }
+
+    #[test]
+    fn to_tilde_round_trips_with_expand_home() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+        let path = home.join(".config/voxline/config.toml");
+        let tilde = to_tilde(&path, &home.join("models"), "~/models");
+        assert_eq!(tilde, "~/.config/voxline/config.toml");
+        assert_eq!(expand_home(&tilde), path);
+    }
+
+    #[test]
+    fn to_tilde_uses_model_dir_tilde_for_files_under_model_dir() {
+        let base = std::env::temp_dir().join(format!("voxline-paths-{}", ulid::Ulid::new()));
+        let model_dir = base.join("models");
+        let model_path = model_dir.join("ggml-small.bin");
+        assert_eq!(
+            to_tilde(&model_path, &model_dir, "~/models"),
+            "~/models/ggml-small.bin"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn scaffold_creates_routing_directories() {

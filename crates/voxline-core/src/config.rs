@@ -35,9 +35,16 @@ pub enum ConfigError {
     Validation(String),
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+fn default_config_version() -> u32 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default, deny_unknown_fields)]
 pub struct Config {
+    /// Schema version for future migrations. Must be `1` in v1.
+    #[serde(default = "default_config_version")]
+    pub config_version: u32,
     pub daemon: DaemonConfig,
     pub paths: PathsConfig,
     pub audio: AudioConfig,
@@ -54,7 +61,7 @@ pub struct Config {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VoiceCommandsConfig {
     pub enabled: bool,
     pub prefix: String,
@@ -70,7 +77,7 @@ impl Default for VoiceCommandsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PreviewConfig {
     pub enabled: bool,
     pub chunk_ms: u64,
@@ -134,7 +141,7 @@ impl PreviewConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct OverlayConfig {
     pub margin_px: u32,
     pub max_width_px: u32,
@@ -157,7 +164,7 @@ impl Default for OverlayConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct DaemonConfig {
     pub log_level: String,
     pub max_concurrent_jobs: u32,
@@ -165,7 +172,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PathsConfig {
     pub config_dir: String,
     pub model_dir: String,
@@ -173,7 +180,7 @@ pub struct PathsConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioConfig {
     pub backend: String,
     pub device: String,
@@ -184,7 +191,7 @@ pub struct AudioConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AudioGatesConfig {
     pub min_record_ms: u64,
     pub min_rms_energy: f32,
@@ -193,7 +200,7 @@ pub struct AudioGatesConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AsrConfig {
     pub backend: String,
     pub model_path: String,
@@ -206,7 +213,7 @@ pub struct AsrConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct AsrLifecycleConfig {
     pub mode: String,
     pub warm_on_daemon_start: bool,
@@ -214,7 +221,7 @@ pub struct AsrLifecycleConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct VocabularyConfig {
     pub enabled: bool,
     pub initial_prompt_enabled: bool,
@@ -224,11 +231,13 @@ pub struct VocabularyConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VocabularyPhrase {
     pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct VocabularyReplacement {
     pub from: String,
     pub to: String,
@@ -237,14 +246,14 @@ pub struct VocabularyReplacement {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct HallucinationFilterConfig {
     pub enabled: bool,
     pub phrases: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct CleanupConfig {
     pub enabled: bool,
     pub provider: String,
@@ -265,7 +274,7 @@ pub enum AutoPasteMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct InjectionConfig {
     pub copy_to_clipboard: bool,
@@ -279,7 +288,7 @@ pub struct InjectionConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct InjectionLinuxConfig {
     pub session: String,
     pub wayland_paste_command: String,
@@ -289,13 +298,13 @@ pub struct InjectionLinuxConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct NotificationsConfig {
     pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct PrivacyConfig {
     pub store_history: bool,
@@ -303,16 +312,13 @@ pub struct PrivacyConfig {
     pub store_raw_transcript: bool,
     pub store_cleaned_transcript: bool,
     pub log_transcripts: bool,
+    pub emit_transcript_in_events: bool,
 }
 
 impl PrivacyConfig {
     #[must_use]
     pub fn sensitive_storage_or_logging_enabled(&self) -> bool {
-        self.store_history
-            || self.store_audio
-            || self.store_raw_transcript
-            || self.store_cleaned_transcript
-            || self.log_transcripts
+        self.store_audio || self.log_transcripts || self.emit_transcript_in_events
     }
 }
 
@@ -418,9 +424,9 @@ impl Default for HallucinationFilterConfig {
             phrases: vec![
                 "thank you.".into(),
                 "thanks for watching.".into(),
-                "subtitles by".into(),
-                "subtitle by".into(),
-                "captioned by".into(),
+                "subtitles by*".into(),
+                "subtitle by*".into(),
+                "captioned by*".into(),
             ],
         }
     }
@@ -469,7 +475,35 @@ impl Default for NotificationsConfig {
         Self { enabled: true }
     }
 }
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            config_version: default_config_version(),
+            daemon: DaemonConfig::default(),
+            paths: PathsConfig::default(),
+            audio: AudioConfig::default(),
+            asr: AsrConfig::default(),
+            vocabulary: VocabularyConfig::default(),
+            cleanup: CleanupConfig::default(),
+            secrets: SecretsConfig::default(),
+            injection: InjectionConfig::default(),
+            notifications: NotificationsConfig::default(),
+            privacy: PrivacyConfig::default(),
+            voice_commands: VoiceCommandsConfig::default(),
+            preview: PreviewConfig::default(),
+            overlay: OverlayConfig::default(),
+        }
+    }
+}
+
 impl Config {
+    /// Returns the fixed path to `config.toml`.
+    ///
+    /// This always resolves to `dirs::config_dir()/voxline/config.toml` and does
+    /// not read `paths.config_dir` from an on-disk config (that would be
+    /// circular during bootstrap). Use `paths.config_dir` only for styles,
+    /// apps, snippets, and other layout files.
     pub fn path() -> Result<PathBuf, ConfigError> {
         dirs::config_dir()
             .map(|path| path.join("voxline/config.toml"))
@@ -486,6 +520,13 @@ impl Config {
             source,
         })?;
         let config = toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })?;
+        Ok(config)
+    }
+
+    /// Loads the config file (or defaults when missing) and runs [`Self::validate`].
+    pub fn load_validated() -> Result<Self, ConfigError> {
+        let config = Self::load_or_default()?;
+        config.validate()?;
         Ok(config)
     }
 
@@ -561,157 +602,298 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.daemon.protocol_version != 1 {
-            return Err(ConfigError::Validation("protocol_version must be 1".into()));
-        }
-        if self.daemon.max_concurrent_jobs != 1 {
-            return Err(ConfigError::Validation(
-                "max_concurrent_jobs must be 1 in v1".into(),
-            ));
-        }
-        if self.audio.target_sample_rate != 16_000 || self.audio.channels != 1 {
-            return Err(ConfigError::Validation(
-                "v1 audio output must be 16 kHz mono".into(),
-            ));
-        }
-        if self.cleanup.enabled && self.cleanup.provider == "none" {
-            return Err(ConfigError::Validation(
-                "cleanup provider cannot be none when cleanup is enabled".into(),
-            ));
-        }
-        if self.cleanup.enabled
-            && self.cleanup.provider == "openrouter"
-            && self.cleanup.model.trim().is_empty()
+        self.validate_all().into_iter().next().map_or(Ok(()), Err)
+    }
+
+    #[must_use]
+    pub fn validate_all(&self) -> Vec<ConfigError> {
+        let mut errors = Vec::new();
+        collect_schema_errors(self, &mut errors);
+        collect_audio_errors(self, &mut errors);
+        collect_asr_errors(self, &mut errors);
+        collect_secrets_and_cleanup_errors(self, &mut errors);
+        collect_injection_and_paths_errors(self, &mut errors);
+        collect_privacy_reserved_errors(self, &mut errors);
+        collect_overlay_and_preview_errors(self, &mut errors);
+        if let Err(error) = commands::validate_voice_commands(&self.voice_commands, &self.paths)
+            .map_err(|error| ConfigError::Validation(format!("voice_commands: {error}")))
         {
-            return Err(ConfigError::Validation(
-                "cleanup model is required when openrouter cleanup is enabled".into(),
-            ));
-        }
-        if self.cleanup.enabled && self.cleanup.default_style.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "cleanup.default_style is required when cleanup is enabled".into(),
-            ));
-        }
-        if !matches!(self.asr.lifecycle.mode.as_str(), "on_demand" | "keep_warm") {
-            return Err(ConfigError::Validation(
-                "asr lifecycle mode must be on_demand or keep_warm".into(),
-            ));
-        }
-        if self.injection.auto_paste != AutoPasteMode::Off && !self.injection.copy_to_clipboard {
-            return Err(ConfigError::Validation(
-                "auto paste requires copy_to_clipboard".into(),
-            ));
-        }
-        if !matches!(
-            self.injection.linux.gnome_wayland_mode.as_str(),
-            "clipboard_only" | "custom"
-        ) {
-            return Err(ConfigError::Validation(
-                "injection.linux.gnome_wayland_mode must be clipboard_only or custom".into(),
-            ));
-        }
-        if self.injection.linux.gnome_wayland_mode == "custom"
-            && self
-                .injection
-                .linux
-                .optional_paste_command
-                .trim()
-                .is_empty()
-        {
-            return Err(ConfigError::Validation(
-                "injection.linux.optional_paste_command is required when gnome_wayland_mode is custom".into(),
-            ));
-        }
-        if self.paths.runtime_dir.trim().is_empty() {
-            return Err(ConfigError::Validation(
-                "paths.runtime_dir cannot be empty".into(),
-            ));
+            errors.push(error);
         }
         if self.cleanup.enabled {
-            validate_cleanup_styles(self)?;
+            collect_cleanup_style_errors(self, &mut errors);
         }
-        commands::validate_voice_commands(&self.voice_commands, &self.paths)
-            .map_err(|error| ConfigError::Validation(format!("voice_commands: {error}")))?;
-        validate_overlay_and_preview(self)?;
-        validate_layout_files(self)
+        collect_layout_file_errors(self, &mut errors);
+        errors
+    }
+
+    #[must_use]
+    pub fn validation_warnings(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+        let model = paths::expand_home(&self.asr.model_path);
+        if !model.is_file() {
+            warnings.push(format!(
+                "ASR model not found at {} (may not be downloaded yet)",
+                model.display()
+            ));
+        }
+        warnings
     }
 }
 
-fn validate_overlay_and_preview(config: &Config) -> Result<(), ConfigError> {
+fn push_validation(errors: &mut Vec<ConfigError>, message: String) {
+    errors.push(ConfigError::Validation(message));
+}
+
+fn collect_schema_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.config_version != 1 {
+        push_validation(
+            errors,
+            format!(
+                "config_version must be 1 (found {}); see docs for upgrading",
+                config.config_version
+            ),
+        );
+    }
+    if config.daemon.protocol_version != 1 {
+        push_validation(errors, "protocol_version must be 1".into());
+    }
+    if config.daemon.max_concurrent_jobs != 1 {
+        push_validation(errors, "max_concurrent_jobs must be 1 in v1".into());
+    }
+    if !matches!(
+        config.daemon.log_level.as_str(),
+        "error" | "warn" | "info" | "debug" | "trace"
+    ) {
+        push_validation(
+            errors,
+            "daemon.log_level must be error, warn, info, debug, or trace".into(),
+        );
+    }
+}
+
+fn collect_audio_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.audio.backend != "cpal" {
+        push_validation(errors, "audio.backend must be cpal".into());
+    }
+    if config.audio.target_sample_rate != 16_000 || config.audio.channels != 1 {
+        push_validation(errors, "v1 audio output must be 16 kHz mono".into());
+    }
+    let max_record_ms = config.audio.max_record_seconds.saturating_mul(1_000);
+    if config.audio.gates.min_record_ms > max_record_ms {
+        push_validation(
+            errors,
+            format!(
+                "audio.gates.min_record_ms ({}) must not exceed max_record_seconds * 1000 ({max_record_ms})",
+                config.audio.gates.min_record_ms
+            ),
+        );
+    }
+    if !(0.0..=1.0).contains(&config.audio.gates.min_rms_energy) {
+        push_validation(
+            errors,
+            "audio.gates.min_rms_energy must be between 0.0 and 1.0".into(),
+        );
+    }
+    if !(0.0..=1.0).contains(&config.audio.gates.min_peak_energy) {
+        push_validation(
+            errors,
+            "audio.gates.min_peak_energy must be between 0.0 and 1.0".into(),
+        );
+    }
+}
+
+fn collect_asr_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.asr.backend != "whisper_rs" {
+        push_validation(errors, "asr.backend must be whisper_rs".into());
+    }
+    if !matches!(config.asr.gpu_backend.as_str(), "cuda" | "vulkan" | "none") {
+        push_validation(
+            errors,
+            "asr.gpu_backend must be cuda, vulkan, or none".into(),
+        );
+    }
+    if config.asr.threads == 0 {
+        push_validation(errors, "asr.threads must be at least 1".into());
+    }
+    if !matches!(
+        config.asr.lifecycle.mode.as_str(),
+        "on_demand" | "keep_warm"
+    ) {
+        push_validation(
+            errors,
+            "asr lifecycle mode must be on_demand or keep_warm".into(),
+        );
+    }
+}
+
+fn collect_secrets_and_cleanup_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.secrets.mode != "auto" {
+        push_validation(errors, "secrets.mode must be auto".into());
+    }
+    if !matches!(config.cleanup.provider.as_str(), "openrouter" | "none") {
+        push_validation(errors, "cleanup.provider must be openrouter or none".into());
+    }
+    if !(0.0..=2.0).contains(&config.cleanup.temperature) {
+        push_validation(
+            errors,
+            "cleanup.temperature must be between 0.0 and 2.0".into(),
+        );
+    }
+    if config.cleanup.timeout_ms == 0 {
+        push_validation(
+            errors,
+            "cleanup.timeout_ms must be greater than zero".into(),
+        );
+    }
+    if config.cleanup.enabled && config.cleanup.provider == "none" {
+        push_validation(
+            errors,
+            "cleanup provider cannot be none when cleanup is enabled".into(),
+        );
+    }
+    if config.cleanup.enabled
+        && config.cleanup.provider == "openrouter"
+        && config.cleanup.model.trim().is_empty()
+    {
+        push_validation(
+            errors,
+            "cleanup model is required when openrouter cleanup is enabled".into(),
+        );
+    }
+    if config.cleanup.enabled && config.cleanup.default_style.trim().is_empty() {
+        push_validation(
+            errors,
+            "cleanup.default_style is required when cleanup is enabled".into(),
+        );
+    }
+}
+
+fn collect_injection_and_paths_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.injection.auto_paste != AutoPasteMode::Off && !config.injection.copy_to_clipboard {
+        push_validation(errors, "auto paste requires copy_to_clipboard".into());
+    }
+    if !matches!(
+        config.injection.linux.gnome_wayland_mode.as_str(),
+        "clipboard_only" | "custom"
+    ) {
+        push_validation(
+            errors,
+            "injection.linux.gnome_wayland_mode must be clipboard_only or custom".into(),
+        );
+    }
+    if config.injection.linux.gnome_wayland_mode == "custom"
+        && config
+            .injection
+            .linux
+            .optional_paste_command
+            .trim()
+            .is_empty()
+    {
+        push_validation(
+            errors,
+            "injection.linux.optional_paste_command is required when gnome_wayland_mode is custom"
+                .into(),
+        );
+    }
+    if config.paths.runtime_dir.trim().is_empty() {
+        push_validation(errors, "paths.runtime_dir cannot be empty".into());
+    }
+}
+
+fn collect_privacy_reserved_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.privacy.store_history {
+        push_validation(
+            errors,
+            "store_history is reserved and not yet implemented; remove it from config or set it to false".into(),
+        );
+    }
+    if config.privacy.store_raw_transcript {
+        push_validation(
+            errors,
+            "store_raw_transcript is reserved and not yet implemented; remove it from config or set it to false".into(),
+        );
+    }
+    if config.privacy.store_cleaned_transcript {
+        push_validation(
+            errors,
+            "store_cleaned_transcript is reserved and not yet implemented; remove it from config or set it to false".into(),
+        );
+    }
+}
+
+fn collect_overlay_and_preview_errors(config: &Config, errors: &mut Vec<ConfigError>) {
     if !matches!(config.overlay.anchor.as_str(), "top" | "bottom" | "auto") {
-        return Err(ConfigError::Validation(
-            "overlay.anchor must be top, bottom, or auto".into(),
-        ));
+        push_validation(errors, "overlay.anchor must be top, bottom, or auto".into());
     }
     if !config.preview.enabled {
-        return Ok(());
+        return;
     }
     if config.preview.chunk_ms == 0 || config.preview.step_ms == 0 {
-        return Err(ConfigError::Validation(
+        push_validation(
+            errors,
             "preview chunk_ms and step_ms must be greater than zero".into(),
-        ));
+        );
     }
     if config.preview.overlap_ms >= config.preview.chunk_ms {
-        return Err(ConfigError::Validation(
+        push_validation(
+            errors,
             "preview overlap_ms must be less than chunk_ms".into(),
-        ));
+        );
     }
     if config.preview.ring_buffer_seconds == 0 {
-        return Err(ConfigError::Validation(
+        push_validation(
+            errors,
             "preview ring_buffer_seconds must be greater than zero".into(),
-        ));
+        );
+    }
+    if !(0.0..=1.0).contains(&config.preview.min_rms_energy) {
+        push_validation(
+            errors,
+            "preview.min_rms_energy must be between 0.0 and 1.0".into(),
+        );
     }
     let preview_model = paths::expand_home(&config.preview.effective_model_path());
     if !preview_model.is_file() {
-        return Err(ConfigError::Validation(format!(
-            "preview model not found at {}",
-            preview_model.display()
-        )));
+        push_validation(
+            errors,
+            format!("preview model not found at {}", preview_model.display()),
+        );
     }
-    Ok(())
 }
 
-fn validate_cleanup_styles(config: &Config) -> Result<(), ConfigError> {
-    styles::ensure_default_style_files(&config.paths)
-        .map_err(|error| ConfigError::Validation(format!("default style files: {error}")))?;
-    styles::validate_style(&config.paths, &config.cleanup.default_style).map_err(|error| {
-        ConfigError::Validation(format!(
-            "cleanup.default_style '{}': {error}",
-            config.cleanup.default_style
-        ))
-    })?;
-    if let Some(issue) = styles::validate_installed_styles(&config.paths)
-        .into_iter()
-        .next()
+fn collect_cleanup_style_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if let Err(error) = styles::ensure_default_style_files(&config.paths)
+        .map_err(|error| ConfigError::Validation(format!("default style files: {error}")))
     {
-        return Err(ConfigError::Validation(format!(
-            "style {}: {}",
-            issue.style, issue.message
-        )));
+        errors.push(error);
+        return;
     }
-    Ok(())
+    if let Err(error) = styles::validate_style(&config.paths, &config.cleanup.default_style)
+        .map_err(|error| {
+            ConfigError::Validation(format!(
+                "cleanup.default_style '{}': {error}",
+                config.cleanup.default_style
+            ))
+        })
+    {
+        errors.push(error);
+    }
+    for issue in styles::validate_installed_styles(&config.paths) {
+        push_validation(errors, format!("style {}: {}", issue.style, issue.message));
+    }
 }
 
-fn validate_layout_files(config: &Config) -> Result<(), ConfigError> {
-    if let Some(issue) = apps::validate_installed_app_profiles(&config.paths)
-        .into_iter()
-        .next()
-    {
-        return Err(ConfigError::Validation(format!(
-            "app {}: {}",
-            issue.app, issue.message
-        )));
+fn collect_layout_file_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    for issue in apps::validate_installed_app_profiles(&config.paths) {
+        push_validation(errors, format!("app {}: {}", issue.app, issue.message));
     }
-    if let Some(issue) = snippets::validate_installed_snippets(&config.paths)
-        .into_iter()
-        .next()
-    {
-        return Err(ConfigError::Validation(format!(
-            "snippet {}: {}",
-            issue.snippet, issue.message
-        )));
+    for issue in snippets::validate_installed_snippets(&config.paths) {
+        push_validation(
+            errors,
+            format!("snippet {}: {}", issue.snippet, issue.message),
+        );
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -770,5 +952,97 @@ mod tests {
         );
         assert!(!preview_asr.gpu);
         assert_eq!(preview_asr.lifecycle.mode, "keep_warm");
+    }
+
+    #[test]
+    fn rejects_unknown_config_keys() {
+        let err = toml::from_str::<Config>("enabeld = true").unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("unknown field") && message.contains("enabeld"),
+            "expected unknown field error naming enabeld, got: {message}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_cleanup_provider() {
+        let mut config = Config::default();
+        config.cleanup.provider = "openai".into();
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("cleanup.provider must be openrouter or none")
+        }));
+    }
+
+    #[test]
+    fn rejects_invalid_log_level() {
+        let mut config = Config::default();
+        config.daemon.log_level = "verbose".into();
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("daemon.log_level must be error, warn, info, debug, or trace")
+        }));
+    }
+
+    #[test]
+    fn rejects_zero_asr_threads() {
+        let mut config = Config::default();
+        config.asr.threads = 0;
+        let errors = config.validate_all();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.to_string().contains("asr.threads must be at least 1"))
+        );
+    }
+
+    #[test]
+    fn rejects_out_of_range_cleanup_temperature() {
+        let mut config = Config::default();
+        config.cleanup.temperature = 3.0;
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("cleanup.temperature must be between 0.0 and 2.0")
+        }));
+    }
+
+    #[test]
+    fn validate_all_collects_multiple_issues() {
+        let mut config = Config::default();
+        config.daemon.log_level = "verbose".into();
+        config.asr.threads = 0;
+        config.cleanup.provider = "openai".into();
+        let errors = config.validate_all();
+        assert!(errors.len() >= 3);
+    }
+
+    #[test]
+    fn rejects_reserved_privacy_storage_flags() {
+        let mut config = Config::default();
+        config.privacy.store_history = true;
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("store_history is reserved and not yet implemented")
+        }));
+    }
+
+    #[test]
+    fn validation_warnings_for_missing_asr_model() {
+        let mut config = Config::default();
+        config.asr.model_path = "/tmp/voxline-nonexistent-model-for-test.bin".into();
+        let warnings = config.validation_warnings();
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("ASR model not found"))
+        );
     }
 }

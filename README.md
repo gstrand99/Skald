@@ -39,12 +39,14 @@ resolves to `$XDG_RUNTIME_DIR/voxline`.
 
 ### Preset profiles
 
-Profiles adjust ASR and cleanup settings without replacing secrets:
-
 ```bash
 voxline config profile power-user-nvidia   # large CUDA model, keep_warm lifecycle
 voxline config profile cpu-safe            # small.en CPU model, on_demand lifecycle
 ```
+
+`power-user-nvidia` resets nearly the entire config to built-in defaults,
+preserving only `[secrets]` and `[cleanup]`. `cpu-safe` applies CPU-safe ASR and
+lifecycle settings and disables cleanup without a full reset.
 
 Restart `voxlined` after changing config if the daemon is already running.
 
@@ -185,8 +187,14 @@ User documentation is published at [docs.voxline.dev](https://docs.voxline.dev) 
 troubleshooting, and the Linux desktop matrix.
 
 ```bash
-just release-cuda         # CUDA voxlined + release CLI/overlay
-just install              # install to ~/.local/bin and run setup when needed
+# GPU (CUDA daemon)
+just release-cuda
+just install-cuda         # install without rebuilding a CPU voxlined
+
+# CPU-only
+just release
+just install
+
 voxline setup             # interactive probe, models, benchmarks, config
 voxline doctor
 ```

@@ -52,6 +52,12 @@ pub fn start() -> Result<()> {
     Ok(())
 }
 
+pub fn restart() -> Result<()> {
+    run_systemctl(&["restart", SERVICE_UNIT_NAME])?;
+    println!("Restarted {SERVICE_UNIT_NAME}");
+    Ok(())
+}
+
 pub fn stop() -> Result<()> {
     run_systemctl(&["stop", SERVICE_UNIT_NAME])?;
     println!("Stopped {SERVICE_UNIT_NAME}");

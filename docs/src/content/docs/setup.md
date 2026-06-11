@@ -27,7 +27,7 @@ VOXLINE_SKIP_SETUP=1 just install
    disk space in the model directory, and whether `voxlined` was built with CUDA.
 2. **Dependencies** — checks PipeWire/Pulse, clipboard tools, paste helpers, and
    prints distro-specific install commands when something is missing.
-3. **Recording** — saves `~/.local/share/voxline/samples/setup.wav` (10 seconds by
+3. **Recording** — saves `~/.local/share/voxline/models/samples/setup.wav` (10 seconds by
    default). This file stays on disk for repeatable benchmarks.
 4. **Models** — offers to download candidate GGML models from Hugging Face
    (`ggerganov/whisper.cpp`). Candidates depend on your hardware profile.

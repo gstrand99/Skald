@@ -38,7 +38,7 @@ pub enum SnippetsCommands {
 }
 
 fn list() -> Result<()> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     snippets::ensure_snippets_dir(&config.paths).context("failed to ensure snippets directory")?;
     let entries = snippets::list_snippets(&config.paths).context("failed to list snippets")?;
     if entries.is_empty() {
@@ -62,7 +62,7 @@ fn list() -> Result<()> {
 }
 
 fn new(name: &str, template: bool) -> Result<()> {
-    let config = Config::load_or_default()?;
+    let config = Config::load_validated()?;
     let snippets_dir = voxline_core::paths::snippets_dir(&config.paths);
     if template {
         snippet_templates::create_template_snippet(&config.paths, name)
