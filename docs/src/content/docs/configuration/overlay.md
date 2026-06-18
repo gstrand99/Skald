@@ -46,6 +46,40 @@ skald overlay
 
 Closing the overlay window does not stop recording. The overlay reconnects after daemon restarts.
 
+## Preview and microphone calibration
+
+Preview the configured overlay without connecting to the daemon or starting dictation:
+
+```bash
+skald overlay preview
+skald overlay preview --style bars
+skald overlay preview --cycle
+skald overlay preview --mode text
+skald overlay preview --anchor bottom
+```
+
+Text preview uses fixed application text. Visualizer preview uses synthetic levels by default.
+Neither path loads ASR, writes audio, changes the clipboard, or pastes.
+
+Use the configured input device for live calibration:
+
+```bash
+skald overlay preview --mode visualizer --microphone
+```
+
+The overlay reports no input, quiet/background input, normal speech response, consistently loud
+input, and clipping. Audio samples are not retained or sent to the daemon, and the capture stream
+is released when the preview closes.
+
+Overrides are temporary unless `--save` is supplied. Saving validates and rewrites the current
+configuration while preserving unrelated settings:
+
+```bash
+skald overlay preview --mode visualizer --style waveform --save
+```
+
+The equivalent development shortcut is `just overlay-preview --cycle`.
+
 ## Visualizer mode
 
 Set `mode = "visualizer"` for recording feedback without scrolling text. The daemon sends
