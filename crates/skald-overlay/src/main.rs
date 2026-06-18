@@ -149,7 +149,7 @@ fn main() -> Result<()> {
             args.cycle,
         );
     });
-    app.run_with_args::<&str>(&[]);
+    app.run_with_args(&["skald-overlay"]);
     Ok(())
 }
 
