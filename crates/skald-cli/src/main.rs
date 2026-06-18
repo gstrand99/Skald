@@ -54,6 +54,8 @@ enum Commands {
     PttStop,
     Cancel,
     Watch,
+    /// Stream privacy-safe JSON updates for a Waybar custom module.
+    Waybar,
     Overlay,
     Transcribe {
         audio_file: std::path::PathBuf,
@@ -340,6 +342,7 @@ async fn main() -> Result<()> {
         Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?)?,
         Commands::Cancel => print_response(&send(Command::Cancel).await?)?,
         Commands::Watch => watch().await?,
+        Commands::Waybar => waybar().await?,
         Commands::Overlay => run_overlay()?,
         Commands::Transcribe { audio_file } => print_response(
             &send(Command::Transcribe {
@@ -701,6 +704,72 @@ fn run_overlay() -> Result<()> {
     } else {
         bail!("skald-overlay exited with {status}");
     }
+}
+
+async fn waybar() -> Result<()> {
+    let socket = client::socket_path_from_config()?;
+    let kinds = vec![EventKind::State, EventKind::Result, EventKind::Error];
+    let mut backoff = Duration::from_secs(1);
+    let mut last_json = String::new();
+
+    emit_waybar_status(
+        &skald_core::desktop::DesktopStatus::disconnected(),
+        &mut last_json,
+    )?;
+
+    loop {
+        match client::request(&socket, Command::Status).await {
+            Ok(response) if response.ok => {
+                if let Some(status) = response.status {
+                    emit_waybar_status(
+                        &skald_core::desktop::DesktopStatus::from_daemon(&status),
+                        &mut last_json,
+                    )?;
+                }
+            }
+            _ => {
+                emit_waybar_status(
+                    &skald_core::desktop::DesktopStatus::disconnected(),
+                    &mut last_json,
+                )?;
+            }
+        }
+
+        match client::subscribe(&socket, kinds.clone()).await {
+            Ok((response, reader)) if response.ok => {
+                backoff = Duration::from_secs(1);
+                let mut reader = BufReader::new(reader);
+                while let Ok(event) = client::read_event(&mut reader).await {
+                    if let Some(status) = skald_core::desktop::DesktopStatus::from_event(&event) {
+                        emit_waybar_status(&status, &mut last_json)?;
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        emit_waybar_status(
+            &skald_core::desktop::DesktopStatus::disconnected(),
+            &mut last_json,
+        )?;
+        tokio::time::sleep(backoff).await;
+        backoff = (backoff * 2).min(Duration::from_secs(15));
+    }
+}
+
+fn emit_waybar_status(
+    status: &skald_core::desktop::DesktopStatus,
+    last_json: &mut String,
+) -> Result<()> {
+    let json = serde_json::to_string(status).context("failed to serialize Waybar status")?;
+    if json != *last_json {
+        println!("{json}");
+        std::io::stdout()
+            .flush()
+            .context("failed to flush Waybar status")?;
+        json.clone_into(last_json);
+    }
+    Ok(())
 }
 
 pub(crate) fn print_response(response: &Response) -> Result<()> {

@@ -30,7 +30,8 @@ Power-user CUDA daemon (RTX-class GPU):
 just release-cuda
 ```
 
-Binaries install to `target/release/` (`skald`, `skaldd`, `skald-overlay`).
+Binaries install to `target/release/` (`skald`, `skaldd`, `skald-overlay`,
+`skald-tray`).
 
 User-local install (runs the setup wizard when no config exists):
 

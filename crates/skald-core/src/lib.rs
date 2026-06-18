@@ -3,6 +3,7 @@ pub mod cleanup;
 pub mod client;
 pub mod commands;
 pub mod config;
+pub mod desktop;
 pub mod download;
 pub mod models;
 pub mod paths;

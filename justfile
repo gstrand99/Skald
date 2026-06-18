@@ -39,9 +39,17 @@ status: build
 watch: build
     target/debug/skald watch
 
+# Stream privacy-safe JSON updates for a Waybar custom module.
+waybar: build
+    target/debug/skald waybar
+
 # Launch the preview overlay (requires preview.enabled and a graphical session).
 overlay: build
     target/debug/skald-overlay
+
+# Launch the optional StatusNotifier/AppIndicator tray client.
+tray: build
+    target/debug/skald-tray
 
 # Verify clipboard write/read/restore through the daemon.
 test-clipboard: build
@@ -144,7 +152,7 @@ release:
 # CUDA release build for the power-user profile (skaldd + CLI + overlay).
 release-cuda:
     cargo build -p skaldd --release --no-default-features --features asr-whisper-rs-cuda
-    cargo build -p skald-cli -p skald-overlay --release
+    cargo build -p skald-cli -p skald-overlay -p skald-tray --release
 
 # Print transcribe-path benchmark timings for a WAV file.
 bench-e2e wav: build
@@ -167,7 +175,7 @@ _install-release-binaries:
     set -euo pipefail
     dest="${HOME}/.local/bin"
     mkdir -p "${dest}"
-    install -m 0755 target/release/skald target/release/skaldd target/release/skald-overlay "${dest}/"
+    install -m 0755 target/release/skald target/release/skaldd target/release/skald-overlay target/release/skald-tray "${dest}/"
     echo "Installed to ${dest}"
     if [[ "${SKALD_SKIP_SETUP:-}" != "1" ]]; then
         target/release/skald setup --if-missing || true
