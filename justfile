@@ -173,6 +173,15 @@ _install-release-binaries:
         target/release/skald setup --if-missing || true
     fi
 
+# Rebuild and reinstall local binaries, upgrade config, and restart the daemon.
+dev-reload: release-cuda
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SKALD_SKIP_SETUP=1 just _install-release-binaries
+    target/release/skald config upgrade
+    target/release/skald service install
+    target/release/skald service restart
+
 # Run the interactive first-time setup wizard.
 setup:
     cargo run -p skald-cli -- setup

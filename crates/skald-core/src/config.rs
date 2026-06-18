@@ -589,6 +589,22 @@ impl Config {
         Ok(path)
     }
 
+    pub fn upgrade() -> Result<PathBuf, ConfigError> {
+        let config = Self::load_or_default()?;
+        scaffold_config_layout(&config.paths).map_err(|source| ConfigError::Write {
+            path: paths::resolve_config_dir(&config.paths),
+            source,
+        })?;
+        styles::ensure_default_style_files(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        apps::ensure_default_app_profiles(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        snippets::ensure_snippets_dir(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        config.validate()?;
+        config.save()
+    }
+
     pub fn apply_profile(&mut self, profile: &str) -> Result<(), ConfigError> {
         match profile {
             "power-user-nvidia" => {
@@ -1063,6 +1079,23 @@ mod tests {
                 .to_string()
                 .contains("cannot migrate configuration version 99")
         );
+    }
+
+    #[test]
+    fn migration_preserves_user_values_and_adds_current_defaults() {
+        let text = r#"
+config_version = 1
+
+[daemon]
+log_level = "debug"
+
+[overlay]
+style = "dots"
+"#;
+        let config = Config::from_toml(text).unwrap();
+        assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(config.overlay.visualizer_style, "dots");
+        assert_eq!(config.overlay.margin_px, OverlayConfig::default().margin_px);
     }
 
     #[test]
