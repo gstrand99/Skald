@@ -1,12 +1,14 @@
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
     clippy::cast_sign_loss,
     clippy::needless_pass_by_value
 )]
 
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
+    collections::VecDeque,
     path::PathBuf,
     rc::Rc,
     sync::{
@@ -56,8 +58,7 @@ struct OverlayState {
     visible: bool,
     recording: bool,
     last_markup: String,
-    target_level: f64,
-    display_level: f64,
+    waveform: VecDeque<f64>,
 }
 
 fn main() -> Result<()> {
@@ -179,13 +180,13 @@ fn build_ui(
         .wrap_mode(gtk::pango::WrapMode::Word)
         .build();
     let visualizer = DrawingArea::builder()
-        .height_request(40)
+        .height_request(72)
         .hexpand(true)
         .build();
-    let drawn_level = Rc::new(Cell::new(0.0_f64));
-    let drawn_level_for_draw = Rc::clone(&drawn_level);
+    let drawn_waveform = Rc::new(RefCell::new(VecDeque::new()));
+    let drawn_waveform_for_draw = Rc::clone(&drawn_waveform);
     visualizer.set_draw_func(move |_, context, width, height| {
-        draw_visualizer(context, width, height, drawn_level_for_draw.get());
+        draw_visualizer(context, width, height, &drawn_waveform_for_draw.borrow());
     });
     preview.add_css_class("skald-overlay-preview");
     root.append(&status);
@@ -228,7 +229,7 @@ fn build_ui(
         &status,
         &preview,
         &visualizer,
-        &drawn_level,
+        &drawn_waveform,
         &overlay_config.mode,
         &mut state,
     );
@@ -255,7 +256,7 @@ fn build_ui(
     let status_for_tick = status.clone();
     let preview_for_tick = preview.clone();
     let visualizer_for_tick = visualizer.clone();
-    let drawn_level_for_tick = Rc::clone(&drawn_level);
+    let drawn_waveform_for_tick = Rc::clone(&drawn_waveform);
     let overlay_config_for_tick = overlay_config.clone();
     let placement_polling_for_tick = Arc::clone(&placement_polling);
     let mut latest_placement: Option<OverlayPlacementHint> = None;
@@ -272,7 +273,7 @@ fn build_ui(
                     state.provisional.clear();
                     state.recording = false;
                     state.last_markup.clear();
-                    state.target_level = 0.0;
+                    state.waveform.clear();
                     state.visible = !hide_when_idle;
                 }
                 UiMessage::Event(event) => apply_event(&mut state, *event, hide_when_idle),
@@ -300,7 +301,7 @@ fn build_ui(
             &status_for_tick,
             &preview_for_tick,
             &visualizer_for_tick,
-            &drawn_level_for_tick,
+            &drawn_waveform_for_tick,
             &overlay_config_for_tick.mode,
             &mut state,
         );
@@ -364,7 +365,7 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
                 state.stable.clear();
                 state.provisional.clear();
                 state.last_markup.clear();
-                state.target_level = 0.0;
+                state.waveform.clear();
             }
         }
         Event::Preview {
@@ -386,7 +387,7 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
             state.stable.clear();
             state.provisional.clear();
             state.last_markup.clear();
-            state.target_level = 0.0;
+            state.waveform.clear();
             state.visible = true;
         }
         Event::Error { error, .. } => {
@@ -394,13 +395,16 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
             state.stable.clear();
             state.provisional.clear();
             state.last_markup.clear();
-            state.target_level = 0.0;
+            state.waveform.clear();
             state.visible = true;
         }
         Event::AudioLevel { rms, peak, .. } => {
             state.visible = true;
             state.recording = true;
-            state.target_level = normalized_audio_level(rms, peak);
+            state.waveform.push_back(normalized_audio_level(rms, peak));
+            while state.waveform.len() > 96 {
+                state.waveform.pop_front();
+            }
             if state.status == "Connected" {
                 state.status = "Recording".into();
             }
@@ -428,7 +432,7 @@ fn apply_state(
     status: &Label,
     preview: &Label,
     visualizer: &DrawingArea,
-    drawn_level: &Cell<f64>,
+    drawn_waveform: &RefCell<VecDeque<f64>>,
     mode: &str,
     state: &mut OverlayState,
 ) {
@@ -442,16 +446,7 @@ fn apply_state(
     let visualizer_mode = mode == "visualizer";
     preview.set_visible(!visualizer_mode);
     visualizer.set_visible(visualizer_mode);
-    let smoothing = if state.target_level > state.display_level {
-        0.45
-    } else {
-        0.16
-    };
-    state.display_level += (state.target_level - state.display_level) * smoothing;
-    if !state.recording {
-        state.target_level = 0.0;
-    }
-    drawn_level.set(state.display_level);
+    drawn_waveform.borrow_mut().clone_from(&state.waveform);
     visualizer.queue_draw();
     if state.visible {
         window.present();
@@ -469,27 +464,30 @@ fn normalized_audio_level(rms: f32, peak: f32) -> f64 {
     (normalized_rms * 0.8 + normalized_peak * 0.2).clamp(0.0, 1.0)
 }
 
-fn draw_visualizer(context: &gtk::cairo::Context, width: i32, height: i32, level: f64) {
-    const BARS: i32 = 9;
+fn draw_visualizer(
+    context: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    waveform: &VecDeque<f64>,
+) {
     let width = f64::from(width);
     let height = f64::from(height);
-    let gap = 5.0;
-    let bar_width = ((width - gap * f64::from(BARS - 1)) / f64::from(BARS)).max(2.0);
-    context.set_source_rgba(0.55, 0.91, 0.99, 0.22);
-    for index in 0..BARS {
-        let x = f64::from(index) * (bar_width + gap);
-        context.rectangle(x, height * 0.4, bar_width, height * 0.2);
-        let _ = context.fill();
+    let center = height / 2.0;
+    let spacing = 6.0;
+    let visible_bars = ((width / spacing).floor() as usize).max(1);
+    let skip = waveform.len().saturating_sub(visible_bars);
+    let left_padding = (width - spacing * visible_bars as f64).max(0.0) / 2.0;
+
+    context.set_source_rgb(0.96, 0.96, 0.96);
+    context.set_line_width(2.5);
+    context.set_line_cap(gtk::cairo::LineCap::Round);
+    for (index, level) in waveform.iter().skip(skip).enumerate() {
+        let x = left_padding + spacing * (index as f64 + 0.5);
+        let half_height = (2.0 + level * (center - 5.0)).clamp(2.0, center - 2.0);
+        context.move_to(x, center - half_height);
+        context.line_to(x, center + half_height);
     }
-    context.set_source_rgb(0.55, 0.91, 0.99);
-    let active_bars = (level * f64::from(BARS)).ceil() as i32;
-    for index in 0..active_bars {
-        let x = f64::from(index) * (bar_width + gap);
-        let position = f64::from(index + 1) / f64::from(BARS);
-        let bar_height = (height * (0.25 + level * (0.75 - position * 0.2))).max(4.0);
-        context.rectangle(x, (height - bar_height) / 2.0, bar_width, bar_height);
-        let _ = context.fill();
-    }
+    let _ = context.stroke();
 }
 
 fn apply_screen_edge_layer_placement(
