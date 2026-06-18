@@ -189,7 +189,8 @@ fn nearest_existing_path(path: &Path) -> Option<PathBuf> {
     }
 }
 
-fn free_space_mib(path: &Path) -> Option<u64> {
+#[must_use]
+pub fn free_space_mib(path: &Path) -> Option<u64> {
     let path = nearest_existing_path(path)?;
     let stat = statvfs(path.as_os_str()).ok()?;
     // POSIX: f_bavail counts fragments of size f_frsize, not f_bsize.

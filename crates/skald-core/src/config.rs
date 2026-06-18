@@ -634,6 +634,7 @@ impl Config {
     }
 
     pub fn save(&self) -> Result<PathBuf, ConfigError> {
+        self.validate()?;
         let path = Self::path()?;
         let parent = path
             .parent()
