@@ -1,0 +1,33 @@
+[package]
+name = "skaldd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = ["asr-whisper-rs-cpu"]
+asr-whisper-rs-cpu = []
+asr-whisper-rs-cuda = ["whisper-rs/cuda"]
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+# Workspace reqwest lacks the `json` feature required by openrouter.rs.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+cpal.workspace = true
+dirs.workspace = true
+hound.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+skald-core = { path = "../skald-core" }
+skald-platform = { path = "../skald-platform" }
+whisper-rs = "0.16"
+rubato = "3.0.0"
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
+
+[lints]
+workspace = true

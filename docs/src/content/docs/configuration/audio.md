@@ -46,7 +46,7 @@ of running ASR.
 ## Tuning gates
 
 - Increase `min_rms_energy` or `min_peak_energy` in noisy environments to reduce false triggers.
-- Decrease them if legitimate speech is rejected (`voxline doctor` and failed toggles with `no_speech`).
+- Decrease them if legitimate speech is rejected (`skald doctor` and failed toggles with `no_speech`).
 - Setup wizard recording uses the same gates as normal dictation.
 
 ## Notes

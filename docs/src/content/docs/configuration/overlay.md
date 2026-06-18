@@ -3,7 +3,7 @@ title: "[overlay]"
 description: Graphical preview overlay window settings.
 ---
 
-Configures `voxline-overlay`, a separate process that subscribes to preview events.
+Configures `skald-overlay`, a separate process that subscribes to preview events.
 Requires `[preview].enabled = true`.
 
 ```toml
@@ -32,12 +32,12 @@ hide_when_idle = true
 | Hyprland / X11 | `anchor = "auto"` places preview near cursor |
 | Hyprland / Sway / River | `top` / `bottom` use layer-shell bars |
 | GNOME Wayland | Floating GTK window; limited positioning |
-| SSH / headless | Use `voxline watch` instead |
+| SSH / headless | Use `skald watch` instead |
 
 ## Launch
 
 ```bash
-voxline overlay
+skald overlay
 ```
 
 Closing the overlay window does not stop recording. The overlay reconnects after daemon restarts.

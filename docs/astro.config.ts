@@ -3,17 +3,17 @@ import starlight from "@astrojs/starlight";
 import gruvbox from "starlight-theme-gruvbox";
 
 export default defineConfig({
-	site: "https://docs.voxline.dev",
+	site: "https://tryskald.dev",
 	integrations: [
 		starlight({
-			title: "VoxLine",
+			title: "Skald",
 			description:
 				"Linux-first, local-first dictation: record, transcribe, clipboard, and safe paste.",
 			social: [
 				{
 					icon: "github",
 					label: "GitHub",
-					href: "https://github.com/gstrand/voxline",
+					href: "https://github.com/gstrand/skald",
 				},
 			],
 			plugins: [gruvbox()],
@@ -47,7 +47,7 @@ export default defineConfig({
 					],
 				},
 				{
-					label: "Using VoxLine",
+					label: "Using Skald",
 					items: [
 						{ label: "CLI reference", slug: "cli" },
 						{ label: "Service & shortcuts", slug: "service" },

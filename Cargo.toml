@@ -1,10 +1,10 @@
 [workspace]
 members = [
-    "crates/voxline-core",
-    "crates/voxlined",
-    "crates/voxline-cli",
-    "crates/voxline-overlay",
-    "crates/voxline-platform",
+    "crates/skald-core",
+    "crates/skaldd",
+    "crates/skald-cli",
+    "crates/skald-overlay",
+    "crates/skald-platform",
 ]
 resolver = "2"
 
@@ -12,7 +12,7 @@ resolver = "2"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/gstrand/voxline"
+repository = "https://github.com/gstrand/skald"
 
 [workspace.dependencies]
 anyhow = "1"
