@@ -1,4 +1,4 @@
-# VoxLine code review findings
+# Skald code review findings
 
 **Branch reviewed:** main @ 46f074f
 **Review date:** 2026-06-11
@@ -20,7 +20,7 @@ that would need such validation are marked accordingly.
   documented and defaulted but never enforced, the capture buffer grows without bound, the
   preview tap re-processes the entire recording history every tick while contending on the
   audio callback's mutex, and CPAL stream errors are warn-logged and otherwise ignored.
-- `crates/voxlined/src/main.rs` (~2,130 lines) concentrates command dispatch, the job state
+- `crates/skaldd/src/main.rs` (~2,130 lines) concentrates command dispatch, the job state
   machine, the dictation pipeline, benchmarks, and event streaming with no tests, and its
   check-then-act busy guards race under concurrent IPC clients. This is the main
   structural risk for future work.
@@ -29,7 +29,7 @@ that would need such validation are marked accordingly.
 
 - Files reviewed: ~40 Rust source files (~12,400 lines across 5 crates), 21 docs pages,
   `config-example/linux/config.toml`, `justfile`, `README.md`,
-  `VoxLine_implementation_plan.md`
+  `Skald_implementation_plan.md`
 - Findings by severity:
   - Critical: 0
   - High: 6
@@ -51,7 +51,7 @@ committed in 13 fix commits after the findings document:
 - `a0f7096` — findings 4, 16, 25, 26, 35, 37
 - `40f1d9f` — findings 9, 18, 19, 39
 - `6aa914e` — findings 32, 38, 45, 46
-- `9326870` — findings 15, 17, 27, 47 (voxlined nits)
+- `9326870` — findings 15, 17, 27, 47 (skaldd nits)
 - `9276d73` — findings 22, 47 (CLI nits), follow-ups to 18, 39
 
 Implemented but needing hardware or desktop-session validation:
@@ -78,8 +78,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** high
 - **Category:** security
-- **Location:** `crates/voxline-core/src/protocol.rs` — `DictationResult`, `Event::Result`;
-  `crates/voxlined/src/main.rs` — `finish_dictation` and snippet/template delivery paths
+- **Location:** `crates/skald-core/src/protocol.rs` — `DictationResult`, `Event::Result`;
+  `crates/skaldd/src/main.rs` — `finish_dictation` and snippet/template delivery paths
   (`state.events.send(Event::Result { ... })` at ~1039, ~1379, ~1538, ~1630)
 - **Status:** confirmed
 - **Description:** `DictationResult` embeds the complete `Transcript` (full text plus all
@@ -91,23 +91,23 @@ items below are the highest-impact gaps against the plan's own requirements.
   *command* access as a v1 risk, but explicitly does not accept transcript text in events.
 - **Evidence:** `protocol.rs` lines ~203–220 (`pub transcript: Transcript` in
   `DictationResult`), ~289–293 (`Event::Result { result: DictationResult }`). No redaction
-  or privacy gate exists on the broadcast path in `main.rs`. `voxline watch` then prints
+  or privacy gate exists on the broadcast path in `main.rs`. `skald watch` then prints
   `result.transcript.text` to stdout.
 - **Remediation:** Emit a metadata-only result event by default (the plan's
   `PublicResultEvent` shape). Include transcript text only when an explicit debug/privacy
-  config option is enabled, and have `voxline doctor` warn when it is. Note `Event::Preview`
+  config option is enabled, and have `skald doctor` warn when it is. Note `Event::Preview`
   necessarily carries text for the overlay; document it as a deliberate exception.
 
 ### 2. `max_record_seconds` is documented but never enforced; capture buffer is unbounded
 
 - **Severity:** high
 - **Category:** performance / correctness
-- **Location:** `crates/voxlined/src/audio.rs` — `start_recording`, `build_stream`;
-  `crates/voxline-core/src/config.rs` — `AudioConfig.max_record_seconds` (default 300)
+- **Location:** `crates/skaldd/src/audio.rs` — `start_recording`, `build_stream`;
+  `crates/skald-core/src/config.rs` — `AudioConfig.max_record_seconds` (default 300)
 - **Status:** confirmed
 - **Description:** `max_record_seconds` exists in the config schema, the example config,
   the plan (section 24), and the docs (`docs/src/content/docs/configuration/audio.md`
-  calls it a "Safety cap on recording length"). No code in `voxlined` reads it. The CPAL
+  calls it a "Safety cap on recording length"). No code in `skaldd` reads it. The CPAL
   callback extends a shared `Vec<f32>` indefinitely (`audio.rs` ~268–271, buffer created
   at ~241).
 - **Risk or impact:** A forgotten toggle records device-native audio into RAM without
@@ -115,7 +115,7 @@ items below are the highest-impact gaps against the plan's own requirements.
   resample, and WAV-write cost for the whole buffer at stop. The documented safety
   behavior simply does not exist.
 - **Evidence:** `grep max_record_seconds` matches only `config.rs`, the example config,
-  the plan, and docs — zero matches in `crates/voxlined/`.
+  the plan, and docs — zero matches in `crates/skaldd/`.
 - **Remediation:** Enforce the cap in the capture path (stop extending or auto-stop the
   job when `samples.len()` exceeds `max_record_seconds * native_rate * channels`), emit a
   notification/error event when triggered, and add a regression test.
@@ -124,8 +124,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** high
 - **Category:** performance
-- **Location:** `crates/voxlined/src/audio.rs` — `RecordingTap::resampled_snapshot`
-  (~64–73); `crates/voxlined/src/preview.rs` — `run_preview_loop` (~155)
+- **Location:** `crates/skaldd/src/audio.rs` — `RecordingTap::resampled_snapshot`
+  (~64–73); `crates/skaldd/src/preview.rs` — `run_preview_loop` (~155)
 - **Status:** confirmed
 - **Description:** Every preview step (default 1 s), `resampled_snapshot()` locks the same
   mutex the real-time CPAL callback uses, clones the **entire** raw capture buffer, mixes
@@ -133,7 +133,7 @@ items below are the highest-impact gaps against the plan's own requirements.
   Cost grows linearly with recording length, so total preview work is quadratic over a
   session.
 
-```64:73:crates/voxlined/src/audio.rs
+```64:73:crates/skaldd/src/audio.rs
     pub fn resampled_snapshot(&self) -> Vec<f32> {
         let raw = self
             .samples
@@ -142,7 +142,7 @@ items below are the highest-impact gaps against the plan's own requirements.
             .unwrap_or_default();
         let mono = mix_to_mono(&raw, self.channels);
         let resampled = resample_linear(&mono, self.sample_rate, self.target_sample_rate);
-        voxline_core::preview::trim_to_ring_buffer(resampled, self.max_samples)
+        skald_core::preview::trim_to_ring_buffer(resampled, self.max_samples)
     }
 ```
 
@@ -157,7 +157,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** high
 - **Category:** correctness
-- **Location:** `crates/voxlined/src/main.rs` — `toggle` (~715), `start` (~738),
+- **Location:** `crates/skaldd/src/main.rs` — `toggle` (~715), `start` (~738),
   `bench_dictation` (~418), and similar guards in `transcribe`, `setup_record`,
   `bench_model_compare`, `insert_snippet`
 - **Status:** confirmed (race window verified in code; not reproduced live)
@@ -176,7 +176,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** high
 - **Category:** correctness
-- **Location:** `crates/voxlined/src/audio.rs` — `build_stream` error callback (~262)
+- **Location:** `crates/skaldd/src/audio.rs` — `build_stream` error callback (~262)
 - **Status:** confirmed
 - **Description:** The only handling for CPAL stream errors (device unplugged, stream
   died) is `tracing::warn!`. The job stays in `Recording`; nothing notifies the job layer
@@ -192,7 +192,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** high
 - **Category:** correctness
-- **Location:** `crates/voxline-cli/src/setup_cmd.rs` — `run` (~44–52 reconfigure prompt,
+- **Location:** `crates/skald-cli/src/setup_cmd.rs` — `run` (~44–52 reconfigure prompt,
   ~198–204 unconditional save)
 - **Status:** confirmed
 - **Description:** The "Reconfigure?" confirmation only runs when interactive. With
@@ -211,8 +211,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security
-- **Location:** `crates/voxline-core/src/download.rs` — `download_model`;
-  `crates/voxline-core/src/models.rs` — catalog
+- **Location:** `crates/skald-core/src/download.rs` — `download_model`;
+  `crates/skald-core/src/models.rs` — catalog
 - **Status:** confirmed
 - **Description:** Downloads are HTTPS-pinned to Hugging Face (good), but the only
   validation is size heuristics: skip re-download if an existing file is ≥ 50% of the
@@ -227,7 +227,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security
-- **Location:** `crates/voxline-cli/src/main.rs` — `print_doctor` (~912–921),
+- **Location:** `crates/skald-cli/src/main.rs` — `print_doctor` (~912–921),
   `build_doctor_suggestions`
 - **Status:** confirmed
 - **Description:** Plan sections 21 and 25.8 require doctor to report and warn when the
@@ -244,8 +244,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security / maintainability
-- **Location:** `crates/voxline-core/src/config.rs` — `PrivacyConfig`;
-  `crates/voxlined/src/main.rs` (only `store_audio` and `log_transcripts` are read)
+- **Location:** `crates/skald-core/src/config.rs` — `PrivacyConfig`;
+  `crates/skaldd/src/main.rs` (only `store_audio` and `log_transcripts` are read)
 - **Status:** confirmed
 - **Description:** `store_history`, `store_raw_transcript`, and `store_cleaned_transcript`
   exist in config, the example file, and doctor output, but have no runtime effect. The
@@ -261,7 +261,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security
-- **Location:** `crates/voxline-core/src/runtime.rs` — `ensure_runtime_dir_for`,
+- **Location:** `crates/skald-core/src/runtime.rs` — `ensure_runtime_dir_for`,
   `verify_mode`; `RuntimeError::NotOwned` (~15) is defined but never constructed
 - **Status:** confirmed (gap); speculative (exploitability — requires a misconfigured
   `paths.runtime_dir` pointing at another user's writable directory)
@@ -275,8 +275,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxlined/src/injection.rs` — `targets_are_stable` (~167–173);
-  `crates/voxline-platform/src/lib.rs` — `TargetContext`
+- **Location:** `crates/skaldd/src/injection.rs` — `targets_are_stable` (~167–173);
+  `crates/skald-platform/src/lib.rs` — `TargetContext`
 - **Status:** confirmed (fails safe)
 - **Description:** Stability requires full struct equality (`start == stop ==
   before_paste`) including `title`. Titles change constantly (editor dirty markers,
@@ -292,14 +292,14 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxline-platform/src/lib.rs` — `capture_x11_target` (~571–580)
+- **Location:** `crates/skald-platform/src/lib.rs` — `capture_x11_target` (~571–580)
 - **Status:** confirmed
 - **Description:** `app_id` is populated from `xdotool getwindowpid`. App profile matching
   (`match_app_id`) and terminal heuristics compare against names like `"kitty"`, which
   never match a numeric PID. PIDs also change per process, adding noise to the stability
   comparison.
 - **Risk or impact:** App-profile routing and terminal detection are effectively broken on
-  X11; `voxline apps detect` output is misleading.
+  X11; `skald apps detect` output is misleading.
 - **Remediation:** Use `xdotool getactivewindow getwindowclassname` (or WM_CLASS via
   `wmctrl -lx`) for `app_id`; keep the PID in a separate field if needed.
 
@@ -307,7 +307,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxlined/src/asr.rs` — `filter_hallucination` (~436–450),
+- **Location:** `crates/skaldd/src/asr.rs` — `filter_hallucination` (~436–450),
   `Worker::transcribe` (~308–322)
 - **Status:** confirmed
 - **Description:** Two issues: (a) matching is full-string equality after lowercasing, so
@@ -325,7 +325,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** performance / quality
-- **Location:** `crates/voxlined/src/audio.rs` — `resample_linear` (~355–368)
+- **Location:** `crates/skaldd/src/audio.rs` — `resample_linear` (~355–368)
 - **Status:** confirmed (code); speculative (accuracy impact — needs A/B WER measurement)
 - **Description:** The plan (section 5) specifies `rubato` or equivalent; downsampling
   48 kHz to 16 kHz by linear interpolation without a low-pass filter folds energy above
@@ -340,8 +340,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** performance
-- **Location:** `crates/voxlined/src/main.rs` — `copy_final_text` (~1727),
-  `deliver_text_to_target` (~1682–1704); `crates/voxline-platform/src/lib.rs` —
+- **Location:** `crates/skaldd/src/main.rs` — `copy_final_text` (~1727),
+  `deliver_text_to_target` (~1682–1704); `crates/skald-platform/src/lib.rs` —
   `copy_to_clipboard`, `read_clipboard`, `wait_for_clipboard`, `paste`
 - **Status:** confirmed
 - **Description:** `wl-copy`/`xclip`/`wtype`/`hyprctl` subprocess waits and
@@ -357,8 +357,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** performance / correctness
-- **Location:** `crates/voxlined/src/preview.rs` — `publish_preview` (~196–210);
-  `crates/voxlined/src/main.rs` — `stream_subscribe` (~2019–2055), `stream_events`
+- **Location:** `crates/skaldd/src/preview.rs` — `publish_preview` (~196–210);
+  `crates/skaldd/src/main.rs` — `stream_subscribe` (~2019–2055), `stream_events`
   (~2094–2111), `broadcast::channel(32)` (~83)
 - **Status:** confirmed
 - **Description:** Preview snapshots are sent to both the coalescing `watch` channel and
@@ -374,11 +374,11 @@ items below are the highest-impact gaps against the plan's own requirements.
   `EventKind::Preview` from broadcast matching), and on `Lagged` resubscribe/skip rather
   than disconnect.
 
-### 17. `voxlined/src/main.rs` is a ~2,130-line god module with no tests
+### 17. `skaldd/src/main.rs` is a ~2,130-line god module with no tests
 
 - **Severity:** medium
 - **Category:** maintainability
-- **Location:** `crates/voxlined/src/main.rs` (entire file)
+- **Location:** `crates/skaldd/src/main.rs` (entire file)
 - **Status:** confirmed
 - **Description:** IPC dispatch, the job state machine, the dictation pipeline, snippet
   and template delivery, benchmarks, clipboard delivery, subscriptions, and notification
@@ -395,13 +395,13 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** maintainability / correctness
-- **Location:** `crates/voxline-core/src/config.rs` — `Config::path` (~473–477),
-  `load_or_default` (~479–489); `crates/voxline-core/src/setup.rs` — `is_setup_complete`
+- **Location:** `crates/skald-core/src/config.rs` — `Config::path` (~473–477),
+  `load_or_default` (~479–489); `crates/skald-core/src/setup.rs` — `is_setup_complete`
 - **Status:** confirmed
 - **Description:** Three related gaps: (a) `load_or_default()` parses but never calls
   `validate()`; daemon startup validates explicitly, but many CLI paths and the repeated
   mid-job reloads (finding 25) do not. (b) `Config::path()` hardcodes
-  `dirs::config_dir()/voxline/config.toml`, so the `paths.config_dir` setting relocates
+  `dirs::config_dir()/skald/config.toml`, so the `paths.config_dir` setting relocates
   styles/apps/snippets but not the config file itself, and `is_setup_complete` checks the
   hardcoded path too. (c) There is no schema version or migration story; renames silently
   revert affected fields to defaults via `#[serde(default)]`.
@@ -415,7 +415,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxline-core/src/config.rs` — `validate()` (~563–714)
+- **Location:** `crates/skald-core/src/config.rs` — `validate()` (~563–714)
 - **Status:** confirmed
 - **Description:** Unvalidated: `cleanup.provider` (any string passes when enabled, except
   the `"none"` check), `secrets.mode`, `daemon.log_level`, `audio.backend`,
@@ -433,9 +433,9 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** maintainability
-- **Location:** `crates/voxline-core/src/styles.rs` — `list_styles`;
-  `crates/voxline-core/src/apps.rs` — `list_app_profiles`;
-  `crates/voxline-core/src/snippets.rs` — `list_snippets`
+- **Location:** `crates/skald-core/src/styles.rs` — `list_styles`;
+  `crates/skald-core/src/apps.rs` — `list_app_profiles`;
+  `crates/skald-core/src/snippets.rs` — `list_snippets`
 - **Status:** confirmed
 - **Description:** Each listing loop propagates per-file read/parse errors with `?`,
   aborting the entire listing. The voice-command registry and validation flows build on
@@ -449,7 +449,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security / consistency
-- **Location:** `crates/voxline-core/src/styles.rs` — `load_style_prompt` (~221),
+- **Location:** `crates/skald-core/src/styles.rs` — `load_style_prompt` (~221),
   `prompt_path_for_style` (~261)
 - **Status:** confirmed
 - **Description:** Snippets validate `content_file`/`template_file` against `/`, `\`, and
@@ -463,10 +463,10 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** maintainability / correctness
-- **Location:** `crates/voxline-cli/src/main.rs` — `send`, `watch` (~551–624),
-  `write_request`; `crates/voxline-core/src/client.rs`
+- **Location:** `crates/skald-cli/src/main.rs` — `send`, `watch` (~551–624),
+  `write_request`; `crates/skald-core/src/client.rs`
 - **Status:** confirmed
-- **Description:** `voxline-core::client` implements connect/subscribe correctly (read
+- **Description:** `skald-core::client` implements connect/subscribe correctly (read
   `Response`, then stream events) and the overlay uses it. The CLI duplicates the logic;
   `watch` deserializes every line as `Event`, so the subscribe ack `Response` fails to
   parse and is dumped raw to stdout, and `response.ok` is never checked.
@@ -479,7 +479,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** maintainability
-- **Location:** `crates/voxline-cli/src/main.rs` — `build_doctor_report`, `print_doctor`,
+- **Location:** `crates/skald-cli/src/main.rs` — `build_doctor_report`, `print_doctor`,
   `doctor` (~741–753)
 - **Status:** confirmed
 - **Description:** Doctor checks config/socket/secrets/paste/privacy, but: no CPAL input
@@ -497,17 +497,17 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxline-cli/src/setup_cmd.rs` — `ensure_daemon`,
+- **Location:** `crates/skald-cli/src/setup_cmd.rs` — `ensure_daemon`,
   `DaemonGuard::drop` (~268–301), end of `run` (~198–235);
-  `crates/voxline-cli/src/service.rs` — `install` (enables, does not start)
+  `crates/skald-cli/src/service.rs` — `install` (enables, does not start)
 - **Status:** confirmed
-- **Description:** If setup spawned a temporary `voxlined --foreground` for benchmarking,
+- **Description:** If setup spawned a temporary `skaldd --foreground` for benchmarking,
   `DaemonGuard` kills it on exit (reasonable — it ran with old config). But the service
   install step only `enable`s the unit and prints start instructions, and if a daemon was
   already running it keeps serving the *old* ASR settings with no restart or warning.
 - **Risk or impact:** Immediately after a "Setup complete." message, dictation either
   fails (no daemon) or silently uses the previous model/lifecycle configuration.
-- **Remediation:** Offer to `systemctl --user restart voxlined` (or print an explicit
+- **Remediation:** Offer to `systemctl --user restart skaldd` (or print an explicit
   "restart required" warning) whenever setup wrote a config and a daemon is running or
   the service was installed.
 
@@ -515,7 +515,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness / performance
-- **Location:** `crates/voxlined/src/main.rs` — `start` (~742–791),
+- **Location:** `crates/skaldd/src/main.rs` — `start` (~742–791),
   `audio_error_response` (~1972–1979), `reload_job_config` (~382–408)
 - **Status:** confirmed
 - **Description:** `cleanup_override`, `style_override`, and `target_at_start` are stored
@@ -533,8 +533,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxlined/src/main.rs` — `bench_model_compare` (~541–579),
-  `bench_dictation` (~411–454); `crates/voxlined/src/cleanup.rs` —
+- **Location:** `crates/skaldd/src/main.rs` — `bench_model_compare` (~541–579),
+  `bench_dictation` (~411–454); `crates/skaldd/src/cleanup.rs` —
   `failed_fallback_outcome` (~87–93)
 - **Status:** confirmed
 - **Description:** `cold_load_ms` always reflects `reload()` latency even when
@@ -550,8 +550,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** performance
-- **Location:** `crates/voxlined/src/preview_asr.rs` (~20–34);
-  `crates/voxline-core/src/config.rs` — `PreviewConfig::to_asr_config` (forces
+- **Location:** `crates/skaldd/src/preview_asr.rs` (~20–34);
+  `crates/skald-core/src/config.rs` — `PreviewConfig::to_asr_config` (forces
   `keep_warm`)
 - **Status:** confirmed (code); needs hardware/GPU validation for actual pressure
 - **Description:** With preview enabled, a dedicated preview engine loads its own model
@@ -566,7 +566,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** security
-- **Location:** `crates/voxlined/src/injection.rs` — `check_paste_safety` (~103–110)
+- **Location:** `crates/skaldd/src/injection.rs` — `check_paste_safety` (~103–110)
 - **Status:** confirmed (arguably by design)
 - **Description:** In `Always` mode only the session/terminal guards run;
   `max_paste_age_ms` and the triple-target check are bypassed. The injection docs describe
@@ -577,12 +577,12 @@ items below are the highest-impact gaps against the plan's own requirements.
 - **Remediation:** Keep the staleness check even in `Always` (a minutes-old paste is rarely
   intended), and have doctor warn when `always` is configured.
 
-### 29. `voxline transcribe --no-cleanup` is a no-op
+### 29. `skald transcribe --no-cleanup` is a no-op
 
 - **Severity:** medium
 - **Category:** correctness
-- **Location:** `crates/voxline-cli/src/main.rs` — `Commands::Transcribe` (~337–344,
-  `no_cleanup: _`); `crates/voxline-core/src/protocol.rs` — `Command::Transcribe`
+- **Location:** `crates/skald-cli/src/main.rs` — `Commands::Transcribe` (~337–344,
+  `no_cleanup: _`); `crates/skald-core/src/protocol.rs` — `Command::Transcribe`
 - **Status:** confirmed
 - **Description:** The flag is accepted and discarded; the protocol command has no cleanup
   field. The transcribe path never runs cleanup today, so behavior happens to be what the
@@ -592,7 +592,7 @@ items below are the highest-impact gaps against the plan's own requirements.
   fails open. Misleading UX today.
 - **Remediation:** Remove the flag or wire it through the protocol.
 
-### 30. `just install` overwrites a CUDA `voxlined` with a CPU build
+### 30. `just install` overwrites a CUDA `skaldd` with a CPU build
 
 - **Severity:** medium
 - **Category:** build / documentation
@@ -627,8 +627,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** medium
 - **Category:** performance
-- **Location:** `crates/voxline-overlay/src/main.rs` — `glib::timeout_add_local`
-  (~208–238); `crates/voxline-platform/src/lib.rs` — `capture_overlay_placement_hint`
+- **Location:** `crates/skald-overlay/src/main.rs` — `glib::timeout_add_local`
+  (~208–238); `crates/skald-platform/src/lib.rs` — `capture_overlay_placement_hint`
 - **Status:** confirmed
 - **Description:** While recording with cursor placement enabled, the overlay calls
   `hyprctl`/`xdotool` synchronously on the UI thread 20 times per second.
@@ -637,11 +637,11 @@ items below are the highest-impact gaps against the plan's own requirements.
 - **Remediation:** Throttle to a few hundred ms, cache the last hint, or move capture to a
   worker thread feeding the UI via a channel.
 
-### 33. `voxline secrets set` reads the API key without masking
+### 33. `skald secrets set` reads the API key without masking
 
 - **Severity:** medium
 - **Category:** security
-- **Location:** `crates/voxline-cli/src/secrets_cmd.rs` — `set_secret` (~28–32)
+- **Location:** `crates/skald-cli/src/secrets_cmd.rs` — `set_secret` (~28–32)
 - **Status:** confirmed
 - **Description:** The OpenRouter key is read via plain `stdin().read_line`, echoing it to
   the terminal and leaving it in scrollback.
@@ -655,7 +655,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** security / privacy
-- **Location:** `crates/voxlined/src/main.rs` — `TemporaryAudio::drop` (~1900–1909)
+- **Location:** `crates/skaldd/src/main.rs` — `TemporaryAudio::drop` (~1900–1909)
 - **Status:** confirmed
 - **Description:** On deletion failure the path is logged at `warn`; plan section 28
   forbids audio paths in default logs after deletion.
@@ -665,7 +665,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low (accepted v1 risk per plan section 10.2)
 - **Category:** security
-- **Location:** `crates/voxlined/src/main.rs` — `transcribe`, `test_openrouter`,
+- **Location:** `crates/skaldd/src/main.rs` — `transcribe`, `test_openrouter`,
   `cleanup_preview`, `template_preview`; no `SO_PEERCRED` check on connections
 - **Status:** confirmed
 - **Description:** Any same-user client can point `Command::Transcribe` at any readable
@@ -677,9 +677,9 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** privacy
-- **Location:** `crates/voxline-core/src/protocol.rs` — `ModelBenchResult.transcript_text`;
-  `crates/voxline-cli/src/setup_cmd.rs` — `print_bench_table` (48-char snippet);
-  `crates/voxline-cli/src/main.rs` — `watch` prints `result.transcript.text`
+- **Location:** `crates/skald-core/src/protocol.rs` — `ModelBenchResult.transcript_text`;
+  `crates/skald-cli/src/setup_cmd.rs` — `print_bench_table` (48-char snippet);
+  `crates/skald-cli/src/main.rs` — `watch` prints `result.transcript.text`
 - **Status:** confirmed
 - **Description:** Reasonable UX choices individually, but together they normalize
   transcript text appearing in scrollback/CI logs. Follows from finding 1 for `watch`.
@@ -689,8 +689,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** maintainability
-- **Location:** `crates/voxline-core/src/protocol.rs` — `JobState::Failed`;
-  `crates/voxlined/src/main.rs` — `cancel` (~1913–1924)
+- **Location:** `crates/skald-core/src/protocol.rs` — `JobState::Failed`;
+  `crates/skaldd/src/main.rs` — `cancel` (~1913–1924)
 - **Status:** confirmed
 - **Description:** Errors reset to `Idle`; `Failed` is never set. `cancel` during
   Transcribing/Cleaning returns `no_active_recording` instead of the plan's
@@ -701,8 +701,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** maintainability
-- **Location:** `crates/voxline-core/src/protocol.rs` — `ProtocolError`;
-  `crates/voxline-core/src/client.rs`
+- **Location:** `crates/skald-core/src/protocol.rs` — `ProtocolError`;
+  `crates/skald-core/src/client.rs`
 - **Status:** confirmed
 - **Description:** The daemon validates request versions, but responses/events are
   consumed without version checks, and error codes (`busy`, `asr_error`, ...) have no
@@ -722,7 +722,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** maintainability
-- **Location:** `crates/voxline-core/src/paths.rs` — `expand_home`;
+- **Location:** `crates/skald-core/src/paths.rs` — `expand_home`;
   `setup.rs` — `path_to_tilde`; `models.rs` — `tilde_model_path`
 - **Status:** confirmed
 - **Description:** Only `~/` is expanded (`$HOME/...` is literal); three modules carry
@@ -733,7 +733,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** maintainability
-- **Location:** `crates/voxline-core/src/system_probe.rs` — `probe_system` (3×
+- **Location:** `crates/skald-core/src/system_probe.rs` — `probe_system` (3×
   `nvidia_gpu_info()` / 3× `nvidia-smi` spawns), `free_space_mib` (parses `df -Pm`)
 - **Status:** confirmed
 - **Remediation:** Bind the GPU info once; use `statvfs` instead of parsing `df`.
@@ -742,7 +742,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** performance
-- **Location:** `crates/voxlined/src/openrouter.rs` — `complete_chat` (~25–28)
+- **Location:** `crates/skaldd/src/openrouter.rs` — `complete_chat` (~25–28)
 - **Status:** confirmed
 - **Description:** A fresh `reqwest::Client` (new TLS handshake, no pooling) per cleanup
   call; transient 429/5xx immediately falls back to raw.
@@ -753,7 +753,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** performance
-- **Location:** `crates/voxlined/src/asr.rs`, `audio.rs`, `preview_asr.rs` — unbounded
+- **Location:** `crates/skaldd/src/asr.rs`, `audio.rs`, `preview_asr.rs` — unbounded
   `mpsc::channel()`; `audio.rs` — `finish_recording` `thread::sleep(20ms)` (~318)
 - **Status:** confirmed
 - **Description:** Command queues have no backpressure (low risk with busy gating); every
@@ -765,9 +765,9 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** correctness / documentation
-- **Location:** `crates/voxline-platform/src/lib.rs` — `paste` (Hyprland uses
+- **Location:** `crates/skald-platform/src/lib.rs` — `paste` (Hyprland uses
   `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow`);
-  `crates/voxlined/src/injection.rs` — terminal check exempts `PasteBackend::Hyprland`
+  `crates/skaldd/src/injection.rs` — terminal check exempts `PasteBackend::Hyprland`
   (~96–101)
 - **Status:** confirmed (likely deliberate: Shift+Insert works in most terminals)
 - **Description:** Plan and docs describe wtype Ctrl+V for Hyprland; the implementation
@@ -781,8 +781,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** correctness / documentation
-- **Location:** `crates/voxline-cli/src/main.rs` — `vocab` (saves without `validate()`,
-  `vocab test` uses plain `str::replace`); `crates/voxlined/src/asr.rs` — whole-word
+- **Location:** `crates/skald-cli/src/main.rs` — `vocab` (saves without `validate()`,
+  `vocab test` uses plain `str::replace`); `crates/skaldd/src/asr.rs` — whole-word
   `replace_whole_words`; vocabulary is captured at `AsrManager::spawn` and not refreshed
   by `reload()`
 - **Status:** confirmed
@@ -795,8 +795,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 - **Severity:** low
 - **Category:** correctness / privacy
-- **Location:** `crates/voxline-overlay/src/main.rs` — `apply_event` (~291–318);
-  `crates/voxline-platform/src/lib.rs` — `capture_x11_placement` (~520–544)
+- **Location:** `crates/skald-overlay/src/main.rs` — `apply_event` (~291–318);
+  `crates/skald-platform/src/lib.rs` — `capture_x11_placement` (~520–544)
 - **Status:** confirmed
 - **Description:** Stable preview text lingers on screen after `Event::Result` until an
   Idle state arrives; X11 placement assumes a single monitor at origin (0,0).
@@ -808,18 +808,18 @@ items below are the highest-impact gaps against the plan's own requirements.
 - **Category:** maintainability / documentation
 - **Status:** confirmed
 - **Description (grouped):**
-  - Plan section 23 lists `voxline test asr`, `voxline test app-detect`, and
+  - Plan section 23 lists `skald test asr`, `skald test app-detect`, and
     `bench end-to-end --cleanup/--no-cleanup`; none exist (closest: `apps detect`,
     `bench dictation --cleanup`).
   - Docs CLI syntax errors: `secrets status openrouter` (no provider arg),
     `vocab add replace --from/--to` (positional in reality).
-  - `privacy.md` documents the setup fixture at `~/.local/share/voxline/samples/setup.wav`;
+  - `privacy.md` documents the setup fixture at `~/.local/share/skald/samples/setup.wav`;
     code writes `<model_dir>/samples/setup.wav`.
   - Interrupted downloads leave `.part` files; nothing cleans or reports them.
   - `print_response` uses `expect("response serializes")` — a panic on schema drift.
   - `bench dictation` accepts `--cleanup --no-cleanup` together (cleanup silently wins);
     `cleanup_override()` validates this elsewhere.
-  - `crates/voxlined/Cargo.toml` re-declares `reqwest` with different features instead of
+  - `crates/skaldd/Cargo.toml` re-declares `reqwest` with different features instead of
     `reqwest.workspace = true`.
   - `DEFAULT_OPENROUTER_MODEL = "~openai/gpt-mini-latest"` uses `~` as an OpenRouter
     routing prefix; easily confused with path tilde-expansion conventions elsewhere.
@@ -830,8 +830,8 @@ items below are the highest-impact gaps against the plan's own requirements.
 
 ## Maintainability themes
 
-- **Module size and layering.** `voxlined/src/main.rs` (~2,130 lines) and
-  `voxline-cli/src/main.rs` (~1,225 lines) are the two god modules. Core is well factored
+- **Module size and layering.** `skaldd/src/main.rs` (~2,130 lines) and
+  `skald-cli/src/main.rs` (~1,225 lines) are the two god modules. Core is well factored
   by contrast. The daemon needs `ipc`/`jobs`/`delivery`/`bench` extraction before the next
   feature lands (findings 4, 17).
 - **Testing strategy.** Core has good unit coverage (routing, commands, templates, config
@@ -842,7 +842,7 @@ items below are the highest-impact gaps against the plan's own requirements.
 - **Duplication.** Styles/apps/snippets repeat loader/validator/editor boilerplate with
   diverging behavior (findings 20, 21); the CLI re-implements the IPC client that core
   already provides (finding 22); tilde/path helpers exist in triplicate (finding 40);
-  `find_voxlined` exists in both `setup_cmd.rs` and `service.rs`.
+  `find_skaldd` exists in both `setup_cmd.rs` and `service.rs`.
 - **Error-type discipline** is good (typed `thiserror` per module, `anyhow` at binary
   edges) but protocol error codes are stringly-typed and `core::client` leaks `anyhow`
   (findings 38, 35-core).
@@ -871,7 +871,7 @@ items below are the highest-impact gaps against the plan's own requirements.
   defaults faithfully — the strongest doc artifact, backed by a test. The configuration
   pages are accurate with three exceptions: `[injection.linux]` paste-command keys are
   presented as functional but are validated-only dead config (paste backends are
-  hardcoded in `voxline-platform`); `max_record_seconds` documents nonexistent behavior
+  hardcoded in `skald-platform`); `max_record_seconds` documents nonexistent behavior
   (finding 2); vocabulary docs say "whole-phrase" and imply hot reload (finding 45).
 - **Docs vs code (CLI):** wrong syntax for `secrets status` and `vocab add replace`;
   `transcribe --no-cleanup` is a no-op; `cleanup disable` exists but is undocumented;
@@ -907,7 +907,7 @@ items below are the highest-impact gaps against the plan's own requirements.
   to clipboard-only.
 - Overlay reconnects with backoff, escapes markup in preview text, and never logs
   transcripts.
-- `voxline-core` routing/styles/commands/template modules have focused unit tests and
+- `skald-core` routing/styles/commands/template modules have focused unit tests and
   typed errors; the voice-command parser follows the plan's conservative start-only,
   prefix-gated design.
 

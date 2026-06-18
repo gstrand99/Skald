@@ -8,7 +8,7 @@ Final transcription uses a local GGML Whisper model through `whisper_rs`.
 ```toml
 [asr]
 backend = "whisper_rs"
-model_path = "~/.local/share/voxline/models/ggml-large-v3-turbo-q5_0.bin"
+model_path = "~/.local/share/skald/models/ggml-large-v3-turbo-q5_0.bin"
 language = "en"
 threads = 8
 gpu = true
@@ -38,7 +38,7 @@ phrases = [
 | `model_path` | string | large turbo q5 path under `model_dir` | Path to a GGML `.bin` model file. Tilde paths are expanded. File must exist before transcription (doctor warns if missing). |
 | `language` | string | `"en"` | Whisper language code passed to the model. |
 | `threads` | integer | `8` | CPU threads for inference (used for CPU paths and non-GPU work inside the backend). |
-| `gpu` | boolean | `true` | Request GPU acceleration when `voxlined` was **built with CUDA** (`just release-cuda`). If `true` on a CPU-only build, model load fails with an unsupported-feature error. |
+| `gpu` | boolean | `true` | Request GPU acceleration when `skaldd` was **built with CUDA** (`just release-cuda`). If `true` on a CPU-only build, model load fails with an unsupported-feature error. |
 | `gpu_backend` | string | `"cuda"` | Reserved for future backend selection. Currently GPU use is controlled by `gpu` and the CUDA compile feature, not this field. |
 
 ## `[asr.lifecycle]` options
@@ -79,9 +79,9 @@ phrases = [
 
 ## Model selection
 
-- Use [Setup wizard](/setup/) to benchmark candidates, or `voxline config profile` presets.
+- Use [Setup wizard](/setup/) to benchmark candidates, or `skald config profile` presets.
 - `cpu-safe` sets `ggml-small.en.bin`, `gpu = false`, and `on_demand` lifecycle.
-- After changing `model_path` or `gpu`, restart the daemon or run `voxline asr restart`.
+- After changing `model_path` or `gpu`, restart the daemon or run `skald asr restart`.
 
 ## Notes
 

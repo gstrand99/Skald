@@ -9,101 +9,101 @@ build:
 
 # Run the daemon in the foreground.
 daemon: build-cuda
-    target/debug/voxlined --foreground
+    target/debug/skaldd --foreground
 
 # Record from the default microphone for the given number of seconds.
 mic seconds="5": build
-    target/debug/voxline test mic --seconds {{seconds}}
+    target/debug/skald test mic --seconds {{seconds}}
 
 # Start a manual recording.
 start: build
-    target/debug/voxline start
+    target/debug/skald start
 
 # Stop a manual recording and print the WAV path and metrics.
 stop: build
-    target/debug/voxline stop
+    target/debug/skald stop
 
 # Toggle recording; the stop toggle transcribes and copies the result.
 toggle: build-cuda
-    target/debug/voxline toggle
+    target/debug/skald toggle
 
 # Cancel a manual recording without retaining a WAV.
 cancel: build
-    target/debug/voxline cancel
+    target/debug/skald cancel
 
 # Show daemon status.
 status: build
-    target/debug/voxline status
+    target/debug/skald status
 
 # Stream daemon events with live preview text when preview is enabled.
 watch: build
-    target/debug/voxline watch
+    target/debug/skald watch
 
 # Launch the preview overlay (requires preview.enabled and a graphical session).
 overlay: build
-    target/debug/voxline-overlay
+    target/debug/skald-overlay
 
 # Verify clipboard write/read/restore through the daemon.
 test-clipboard: build
-    target/debug/voxline test clipboard
+    target/debug/skald test clipboard
 
 # Paste a visible test string into the currently focused safe target.
 test-paste: build
-    target/debug/voxline test paste
+    target/debug/skald test paste
 
 # Report session, clipboard, target detection, and paste capabilities.
 doctor: build
-    target/debug/voxline doctor
+    target/debug/skald doctor
 
 # Install the systemd user service and print shortcut guidance.
 service-install: build-cuda
-    target/debug/voxline service install
+    target/debug/skald service install
 
 # Show systemd user service status.
 service-status: build-cuda
-    target/debug/voxline service status
+    target/debug/skald service status
 
 # Start the systemd user service.
 service-start: build-cuda
-    target/debug/voxline service start
+    target/debug/skald service start
 
 # Stop the systemd user service.
 service-stop: build-cuda
-    target/debug/voxline service stop
+    target/debug/skald service stop
 
 # Preview OpenRouter cleanup for sample text.
 cleanup-preview text style="": build
     #!/usr/bin/env bash
     set -euo pipefail
     if [[ -n "{{style}}" ]]; then
-        target/debug/voxline cleanup preview --style "{{style}}" "{{text}}"
+        target/debug/skald cleanup preview --style "{{style}}" "{{text}}"
     else
-        target/debug/voxline cleanup preview "{{text}}"
+        target/debug/skald cleanup preview "{{text}}"
     fi
 
 # List configured cleanup styles.
 styles-list: build
-    target/debug/voxline styles list
+    target/debug/skald styles list
 
 # Show active target and matched application profile.
 apps-detect: build
-    target/debug/voxline apps detect
+    target/debug/skald apps detect
 
 # List configured insert snippets.
 snippets-list: build
-    target/debug/voxline snippets list
+    target/debug/skald snippets list
 
 # Preview template snippet rendering for sample dictated text.
 snippets-preview name text: build
-    target/debug/voxline snippets preview {{name}} "{{text}}"
+    target/debug/skald snippets preview {{name}} "{{text}}"
 
 # Test voice command parsing for sample transcript text.
 commands-test text: build
-    target/debug/voxline commands test "{{text}}"
+    target/debug/skald commands test "{{text}}"
 
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
-    target/debug/voxline test openrouter
+    target/debug/skald test openrouter
 
 # Validate a generated WAV file.
 inspect wav:
@@ -115,44 +115,44 @@ play wav:
 
 # Transcribe a 16 kHz mono WAV through the running daemon.
 transcribe wav: build
-    target/debug/voxline transcribe {{wav}}
+    target/debug/skald transcribe {{wav}}
 
 # Load the configured ASR model.
 asr-load: build
-    target/debug/voxline asr load
+    target/debug/skald asr load
 
 # Show ASR model state.
 asr-status: build
-    target/debug/voxline asr status
+    target/debug/skald asr status
 
 # Benchmark transcription for a WAV file.
 bench-asr wav: build
-    target/debug/voxline bench asr {{wav}}
+    target/debug/skald bench asr {{wav}}
 
 # Benchmark loading the configured ASR model.
 bench-model-load: build
-    target/debug/voxline bench model-load
+    target/debug/skald bench model-load
 
 # Build the daemon with CUDA-enabled whisper-rs.
 build-cuda:
-    cargo build -p voxlined --no-default-features --features asr-whisper-rs-cuda
+    cargo build -p skaldd --no-default-features --features asr-whisper-rs-cuda
 
 # Optimized release builds for local installation.
 release:
     cargo build --workspace --release
 
-# CUDA release build for the power-user profile (voxlined + CLI + overlay).
+# CUDA release build for the power-user profile (skaldd + CLI + overlay).
 release-cuda:
-    cargo build -p voxlined --release --no-default-features --features asr-whisper-rs-cuda
-    cargo build -p voxline-cli -p voxline-overlay --release
+    cargo build -p skaldd --release --no-default-features --features asr-whisper-rs-cuda
+    cargo build -p skald-cli -p skald-overlay --release
 
 # Print transcribe-path benchmark timings for a WAV file.
 bench-e2e wav: build
-    target/debug/voxline bench end-to-end {{wav}}
+    target/debug/skald bench end-to-end {{wav}}
 
 # Full dictation-path benchmark (ASR + optional cleanup + clipboard).
 bench-dictation wav *flags="": build
-    target/debug/voxline bench dictation {{wav}} {{flags}}
+    target/debug/skald bench dictation {{wav}} {{flags}}
 
 # Install release binaries to ~/.local/bin (user-local).
 install: release
@@ -167,21 +167,21 @@ _install-release-binaries:
     set -euo pipefail
     dest="${HOME}/.local/bin"
     mkdir -p "${dest}"
-    install -m 0755 target/release/voxline target/release/voxlined target/release/voxline-overlay "${dest}/"
+    install -m 0755 target/release/skald target/release/skaldd target/release/skald-overlay "${dest}/"
     echo "Installed to ${dest}"
-    if [[ "${VOXLINE_SKIP_SETUP:-}" != "1" ]]; then
-        target/release/voxline setup --if-missing || true
+    if [[ "${SKALD_SKIP_SETUP:-}" != "1" ]]; then
+        target/release/skald setup --if-missing || true
     fi
 
 # Run the interactive first-time setup wizard.
 setup:
-    cargo run -p voxline-cli -- setup
+    cargo run -p skald-cli -- setup
 
 # Create the default config tree and config.toml.
 config-init:
-    cargo run -p voxline-cli -- config init
+    cargo run -p skald-cli -- config init
 
-# Run the Starlight docs dev server (https://docs.voxline.dev).
+# Run the Starlight docs dev server (https://tryskald.dev).
 docs-dev:
     cd docs && bun run dev
 
@@ -189,7 +189,7 @@ docs-dev:
 docs-build:
     cd docs && bun run build
 
-# Build and deploy docs to Cloudflare Workers (docs.voxline.dev).
+# Build and deploy docs to Cloudflare Workers (tryskald.dev).
 docs-deploy:
     cd docs && bun run deploy
 

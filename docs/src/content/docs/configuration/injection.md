@@ -63,12 +63,12 @@ Hyprland uses `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow`; Sway us
 ### Hyprland paste
 
 Hyprland uses `hyprctl dispatch sendshortcut SHIFT,Insert,activewindow` rather than
-`wtype` Ctrl+V. Shift+Insert is widely recognized in terminals, which is why VoxLine
+`wtype` Ctrl+V. Shift+Insert is widely recognized in terminals, which is why Skald
 allows automatic paste into terminals on Hyprland only (other backends keep the
 terminal guard).
 
 Some XWayland apps paste the **primary** selection on Shift+Insert, not the clipboard.
-Before dispatching the shortcut, VoxLine best-effort copies the dictation text to the
+Before dispatching the shortcut, Skald best-effort copies the dictation text to the
 primary selection with `wl-copy --primary` (failures are logged at debug and do not
 abort the paste). Desktop-session validation is still needed across common Hyprland apps.
 
@@ -77,9 +77,9 @@ Application profiles can set `prefer_clipboard_only` per app. See [Related files
 ## Testing
 
 ```bash
-voxline test clipboard
-voxline test paste
-voxline doctor    # paste capability report
+skald test clipboard
+skald test paste
+skald doctor    # paste capability report
 ```
 
 ## Notes

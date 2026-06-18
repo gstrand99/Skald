@@ -2829,6 +2829,91 @@ dependencies = [
 ]
 
 [[package]]
+name = "skald-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cpal",
+ "dialoguer",
+ "dirs",
+ "indicatif",
+ "serde",
+ "serde_json",
+ "skald-core",
+ "skald-platform",
+ "tokio",
+ "ulid",
+]
+
+[[package]]
+name = "skald-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "keyring",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.9.12+spec-1.1.0",
+ "tracing",
+ "ulid",
+]
+
+[[package]]
+name = "skald-overlay"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "gtk4",
+ "gtk4-layer-shell",
+ "skald-core",
+ "skald-platform",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "skald-platform"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "skaldd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "cpal",
+ "dirs",
+ "hound",
+ "reqwest",
+ "rubato",
+ "rustix",
+ "serde",
+ "serde_json",
+ "skald-core",
+ "skald-platform",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "whisper-rs",
+]
+
+[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3362,91 +3447,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "voxline-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cpal",
- "dialoguer",
- "dirs",
- "indicatif",
- "serde",
- "serde_json",
- "tokio",
- "ulid",
- "voxline-core",
- "voxline-platform",
-]
-
-[[package]]
-name = "voxline-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs",
- "keyring",
- "reqwest",
- "rustix",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "toml 0.9.12+spec-1.1.0",
- "tracing",
- "ulid",
-]
-
-[[package]]
-name = "voxline-overlay"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "gtk4",
- "gtk4-layer-shell",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "voxline-core",
- "voxline-platform",
-]
-
-[[package]]
-name = "voxline-platform"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "voxlined"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "cpal",
- "dirs",
- "hound",
- "reqwest",
- "rubato",
- "rustix",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "voxline-core",
- "voxline-platform",
- "whisper-rs",
 ]
 
 [[package]]

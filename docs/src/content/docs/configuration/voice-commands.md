@@ -9,7 +9,7 @@ the transcript after ASR to select cleanup styles or insert snippets.
 ```toml
 [voice_commands]
 enabled = false
-prefix = "voxline"
+prefix = "skald"
 ```
 
 ## Options
@@ -17,14 +17,14 @@ prefix = "voxline"
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | boolean | `false` | When true, parse voice commands from transcript text. |
-| `prefix` | string | `"voxline"` | Required spoken prefix (case-insensitive matching). ASR may split this into two words (`Vox Line`); both are recognized. |
+| `prefix` | string | `"skald"` | Required spoken prefix (case-insensitive matching). ASR may split this into two words (`Skald`); both are recognized. |
 
 ## Behavior
 
 When enabled, a transcript starting with the prefix can:
 
-- Select a cleanup style — e.g. `voxline professional thanks for the update`
-- Trigger snippet-only insertion — e.g. `voxline signature` with an empty remainder
+- Select a cleanup style — e.g. `skald professional thanks for the update`
+- Trigger snippet-only insertion — e.g. `skald signature` with an empty remainder
 - Route to named snippet aliases configured in `snippets/` and command registry
 
 The prefix and command word are stripped from text sent to cleanup and insertion.
@@ -33,11 +33,11 @@ The prefix and command word are stripped from text sent to cleanup and insertion
 
 ```bash
 # Enable [voice_commands] in config.toml first
-voxline commands test "voxline professional hey john thanks"
-voxline commands conflicts
+skald commands test "skald professional hey john thanks"
+skald commands conflicts
 ```
 
-`voxline config validate` checks voice command aliases for conflicts with snippets.
+`skald config validate` checks voice command aliases for conflicts with snippets.
 
 ## Notes
 

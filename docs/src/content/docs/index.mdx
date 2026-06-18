@@ -3,15 +3,15 @@ title: Introduction
 description: Local-first dictation for Linux with optional cloud cleanup.
 ---
 
-VoxLine is a Linux-first, local-first dictation daemon and CLI. It records speech,
+Skald is a Linux-first, local-first dictation daemon and CLI. It records speech,
 transcribes with a local Whisper model, copies the result to the clipboard, and
 pastes only when the active target can be verified as stable.
 
 ## How it works
 
-1. Bind a compositor shortcut to `voxline toggle` (or use push-to-talk with
-   `voxline start` / `voxline stop`).
-2. `voxlined` captures audio, runs ASR, optionally cleans up transcript text, and
+1. Bind a compositor shortcut to `skald toggle` (or use push-to-talk with
+   `skald start` / `skald stop`).
+2. `skaldd` captures audio, runs ASR, optionally cleans up transcript text, and
    delivers output to the clipboard.
 3. Safe paste inserts text only when the window you dictated into is still the
    active, known target.
@@ -33,7 +33,7 @@ just install-cuda          # ~/.local/bin + setup wizard when unconfigured
 just release
 just install
 
-voxline doctor
+skald doctor
 ```
 
 Use the [Install](/install/) guide for dependencies and manual setup, or the
