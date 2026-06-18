@@ -65,3 +65,14 @@ skald models list
 skald models install small.en
 skald models select small.en
 ```
+
+For a noninteractive profile:
+
+```bash
+just setup-cpu
+just setup-nvidia  # requires NVIDIA drivers and a CUDA-enabled build
+```
+
+Validate the resulting installation with `just validate-models-cpu` or
+`just validate-models-nvidia`. NVIDIA validation requires working local NVIDIA
+drivers and cannot be inferred from model-file verification alone.
