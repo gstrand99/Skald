@@ -9,6 +9,7 @@ Text mode requires `[preview].enabled = true`; visualizer mode does not.
 ```toml
 [overlay]
 mode = "text"
+visualizer_style = "waveform"
 margin_px = 16
 max_width_px = 720
 anchor = "auto"
@@ -21,6 +22,7 @@ hide_when_idle = true
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `mode` | string | `"text"` | **`text`** shows stable/provisional transcription. **`visualizer`** shows microphone level bars without displaying transcript text or requiring preview ASR. |
+| `visualizer_style` | string | `"waveform"` | Visualizer appearance: **`waveform`**, **`bars`**, **`pulse`**, or **`dots`**. Ignored in text mode. |
 | `margin_px` | integer | `16` | Margin from screen edges or cursor anchor in pixels. |
 | `max_width_px` | integer | `720` | Maximum overlay width in pixels. |
 | `anchor` | string | `"auto"` | **`top`**: full-width bar at top. **`bottom`**: full-width bar at bottom. **`auto`**: place near cursor on Hyprland/X11 when supported; otherwise fall back to floating window behavior. |
@@ -51,9 +53,18 @@ rate-limited normalized RMS and peak levels to the overlay; raw audio is never s
 Visualizer mode works with `[preview].enabled = false`, so it does not load the preview model.
 Text and visualizer modes are separate in this release.
 
+Available styles:
+
+| Style | Appearance |
+|-------|------------|
+| `waveform` | Scrolling mirrored waveform history |
+| `bars` | Seven vertical level bars |
+| `pulse` | A centered circle that expands with input level |
+| `dots` | Scrolling mirrored dots |
+
 To validate it manually:
 
-1. Set `overlay.mode = "visualizer"` and optionally set `preview.enabled = false`.
+1. Set `overlay.mode = "visualizer"`, choose `overlay.visualizer_style`, and optionally set `preview.enabled = false`.
 2. Restart `skaldd`, then run `just overlay`.
 3. Start a recording and confirm the bars react to normal speech, settle after speech stops,
    and disappear or return to idle when recording ends.

@@ -165,6 +165,7 @@ threads = 0
 
 [overlay]
 mode = "text"
+visualizer_style = "waveform"
 margin_px = 16
 max_width_px = 720
 # top | bottom | auto (near cursor on Hyprland/X11)
