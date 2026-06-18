@@ -511,8 +511,7 @@ fn config(command: &ConfigCommands) -> Result<()> {
         ConfigCommands::Path => println!("{}", Config::path()?.display()),
         ConfigCommands::Init { force } => println!("{}", Config::init(*force)?.display()),
         ConfigCommands::Validate => {
-            let config = Config::load_or_default()?;
-            config.validate()?;
+            Config::load_validated()?;
             println!("configuration is valid");
         }
         ConfigCommands::Profile { name } => {
