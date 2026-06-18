@@ -7,8 +7,8 @@
 #   skald config validate
 #   skald doctor
 
-# Schema version for future migrations. Must be 1 in v1.
-config_version = 1
+# Current schema version. Supported older versions migrate in memory when loaded.
+config_version = 2
 
 [daemon]
 log_level = "info"

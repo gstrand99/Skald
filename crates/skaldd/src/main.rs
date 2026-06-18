@@ -41,8 +41,7 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let _args = Args::parse();
-    let config = Config::load_or_default()?;
-    config.validate()?;
+    let config = Config::load_validated()?;
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
