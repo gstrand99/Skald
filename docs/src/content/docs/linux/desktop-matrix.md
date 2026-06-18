@@ -15,12 +15,12 @@ Manual checklist for the first Linux release. Run after `just check` and
 | GNOME Wayland | | | | | | Clipboard-only paste; floating overlay |
 | KDE Wayland | | | | | | Clipboard-only default |
 | X11 | | | | | | xdotool paste when installed |
-| SSH / headless | | | | | | `voxline watch` only; no overlay |
+| SSH / headless | | | | | | `skald watch` only; no overlay |
 
 ## Privacy checks
 
 - `[privacy]` defaults: no storage, no transcript logging
-- `voxline doctor` reports sensitive options when enabled
+- `skald doctor` reports sensitive options when enabled
 - Cleanup off by default; enabling shows doctor warning
 - Daemon socket mode `0600`, runtime dir mode `0700`
 

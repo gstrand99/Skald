@@ -1,11 +1,11 @@
-# VoxLine default Linux configuration.
+# Skald default Linux configuration.
 #
-# Copy to ~/.config/voxline/config.toml or run:
-#   voxline config init
+# Copy to ~/.config/skald/config.toml or run:
+#   skald config init
 #
 # Validate after edits:
-#   voxline config validate
-#   voxline doctor
+#   skald config validate
+#   skald doctor
 
 # Schema version for future migrations. Must be 1 in v1.
 config_version = 1
@@ -16,9 +16,9 @@ max_concurrent_jobs = 1
 protocol_version = 1
 
 [paths]
-config_dir = "~/.config/voxline"
-model_dir = "~/.local/share/voxline/models"
-# "auto" uses $XDG_RUNTIME_DIR/voxline (recommended on Linux).
+config_dir = "~/.config/skald"
+model_dir = "~/.local/share/skald/models"
+# "auto" uses $XDG_RUNTIME_DIR/skald (recommended on Linux).
 runtime_dir = "auto"
 
 [audio]
@@ -37,7 +37,7 @@ notify_on_no_speech = true
 
 [asr]
 backend = "whisper_rs"
-model_path = "~/.local/share/voxline/models/ggml-large-v3-turbo-q5_0.bin"
+model_path = "~/.local/share/skald/models/ggml-large-v3-turbo-q5_0.bin"
 language = "en"
 threads = 8
 gpu = true
@@ -72,7 +72,7 @@ text = "OpenRouter"
 text = "Hyprland"
 
 [[vocabulary.phrases]]
-text = "VoxLine"
+text = "Skald"
 
 [[vocabulary.replacements]]
 from = "hyper land"
@@ -88,7 +88,7 @@ case_sensitive = false
 # Cleanup is opt-in. Audio stays local; transcript text is sent to the provider when enabled.
 enabled = false
 provider = "none"
-# Default OpenRouter model when cleanup is enabled (voxline cleanup enable openrouter).
+# Default OpenRouter model when cleanup is enabled (skald cleanup enable openrouter).
 model = "~openai/gpt-mini-latest"
 # Cleanup prompt style under paths.config_dir/styles/ (see styles/default.toml).
 default_style = "default"
@@ -97,17 +97,17 @@ timeout_ms = 10000
 fallback_to_raw_on_error = true
 skip_if_word_count_below = 5
 
-# To enable: voxline cleanup enable openrouter
+# To enable: skald cleanup enable openrouter
 # (sets provider = "openrouter" and leaves model as above)
 
 [secrets]
 # API keys are not stored in config.toml. Use:
-#   voxline secrets set openrouter
+#   skald secrets set openrouter
 # Lookup order: keyring → OPENROUTER_API_KEY env → optional file fallback.
 mode = "auto"
 openrouter_env_var = "OPENROUTER_API_KEY"
 allow_insecure_file_fallback = false
-insecure_file_path = "~/.config/voxline/secrets.toml"
+insecure_file_path = "~/.config/skald/secrets.toml"
 
 [injection]
 copy_to_clipboard = true
@@ -143,15 +143,15 @@ log_transcripts = false
 emit_transcript_in_events = false
 
 # Experimental: spoken routing at the start of a transcript (disabled by default).
-# Requires a prefix such as "voxline professional ..." or "voxline signature".
-# Test with: voxline commands test "voxline professional hey john thanks"
+# Requires a prefix such as "skald professional ..." or "skald signature".
+# Test with: skald commands test "skald professional hey john thanks"
 [voice_commands]
 enabled = false
-prefix = "voxline"
+prefix = "skald"
 
 # Realtime transcription preview while recording (never pasted).
 # Uses a separate small model on CPU by default while final transcription keeps [asr].
-# Enable with preview.enabled = true, then run: voxline watch
+# Enable with preview.enabled = true, then run: skald watch
 [preview]
 enabled = false
 chunk_ms = 2000
@@ -159,7 +159,7 @@ step_ms = 1000
 overlap_ms = 500
 min_rms_energy = 0.003
 ring_buffer_seconds = 30
-model_path = "~/.local/share/voxline/models/ggml-small.en.bin"
+model_path = "~/.local/share/skald/models/ggml-small.en.bin"
 gpu = false
 threads = 0
 

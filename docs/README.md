@@ -1,6 +1,6 @@
-# VoxLine documentation site
+# Skald documentation site
 
-[Astro Starlight](https://starlight.astro.build/) site for [docs.voxline.dev](https://docs.voxline.dev).
+[Astro Starlight](https://starlight.astro.build/) site for [tryskald.dev](https://tryskald.dev).
 
 ## Requirements
 
@@ -30,5 +30,5 @@ just docs-deploy
 
 ## Custom domain
 
-`docs.voxline.dev` is set in `astro.config.ts` (`site`) and attached to the Workers
+`tryskald.dev` is set in `astro.config.ts` (`site`) and attached to the Workers
 asset route in the Cloudflare dashboard.

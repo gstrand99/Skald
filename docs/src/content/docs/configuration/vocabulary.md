@@ -27,7 +27,7 @@ case_sensitive = false
 | `enabled` | boolean | `true` | Master switch for vocabulary features. When false, phrases and replacements are ignored. |
 | `initial_prompt_enabled` | boolean | `true` | When true, pass configured phrases to Whisper as an initial prompt (comma-separated). Biases spelling of names and product terms. |
 | `post_replace_enabled` | boolean | `true` | When true, apply `[[vocabulary.replacements]]` after transcription. |
-| `phrases` | array of tables | OpenRouter, Hyprland, VoxLine | List of `[[vocabulary.phrases]]` entries. |
+| `phrases` | array of tables | OpenRouter, Hyprland, Skald | List of `[[vocabulary.phrases]]` entries. |
 | `replacements` | array of tables | see defaults | List of `[[vocabulary.replacements]]` entries. |
 
 ## `[[vocabulary.phrases]]`
@@ -47,18 +47,18 @@ case_sensitive = false
 ## CLI management
 
 ```bash
-voxline vocab list
-voxline vocab test "hyper land is great"
-voxline vocab add phrase "My Project"
-voxline vocab add replace "open router" "OpenRouter"
+skald vocab list
+skald vocab test "hyper land is great"
+skald vocab add phrase "My Project"
+skald vocab add replace "open router" "OpenRouter"
 ```
 
-CLI edits rewrite `config.toml`. Restart `voxlined` after vocabulary changes: the ASR
+CLI edits rewrite `config.toml`. Restart `skaldd` after vocabulary changes: the ASR
 worker captures vocabulary when it spawns at daemon start.
 
 ## Notes
 
 - Initial prompt biasing works best for short proper nouns and technical terms.
 - Replacements fix consistent ASR mistakes without retraining the model.
-- `voxline vocab test` applies the same whole-word replacement rules used during
+- `skald vocab test` applies the same whole-word replacement rules used during
   transcription.
