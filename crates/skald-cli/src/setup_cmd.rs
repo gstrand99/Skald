@@ -9,8 +9,8 @@ use dialoguer::{Confirm, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use skald_core::{
     config::Config,
-    download::download_model,
-    models::{ModelCandidate, recommended_candidates},
+    download::{download_model, verify_model_file},
+    models::{ModelCandidate, recommended_candidates, record_managed_model},
     paths::{resolve_model_dir, scaffold_config_layout},
     protocol::{AsrBenchCandidate, Command},
     service::SERVICE_UNIT_NAME,
@@ -399,7 +399,13 @@ async fn download_candidates(candidates: &[ModelCandidate], model_dir: &Path) ->
     for candidate in candidates {
         if candidate.path.is_file() {
             if let Some(entry) = candidate.entry() {
-                println!("Already have {}", entry.file_name);
+                verify_model_file(&candidate.path, entry.expected_size, entry.sha256)
+                    .await
+                    .with_context(|| {
+                        format!("existing model failed verification: {}", entry.file_name)
+                    })?;
+                record_managed_model(model_dir, entry)?;
+                println!("Already have verified {}", entry.file_name);
             }
             continue;
         }
@@ -430,6 +436,7 @@ async fn download_candidates(candidates: &[ModelCandidate], model_dir: &Path) ->
             bar.set_position(downloaded);
         };
         download_model(entry, &candidate.path, Some(&bar_cb)).await?;
+        record_managed_model(model_dir, entry)?;
         bar.finish_with_message(format!("Downloaded {}", entry.file_name));
     }
     let _ = model_dir;

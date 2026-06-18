@@ -1,18 +1,28 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{config::PathsConfig, paths::resolve_model_dir, system_probe::SystemProfile};
 
+pub const CATALOG_VERSION: u32 = 1;
 pub const HF_BASE: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+const METADATA_FILE: &str = "managed-models.json";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelCatalogEntry {
     pub id: &'static str,
     pub file_name: &'static str,
     pub gpu: bool,
+    pub expected_size: u64,
     pub approx_size_mib: u64,
     pub sha256: &'static str,
+    pub language: &'static str,
+    pub intended_use: &'static str,
+    pub hardware_guidance: &'static str,
     pub description: &'static str,
 }
 
@@ -21,32 +31,48 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         id: "base.en",
         file_name: "ggml-base.en.bin",
         gpu: false,
+        expected_size: 147_964_211,
         approx_size_mib: 150,
         sha256: "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+        language: "English",
+        intended_use: "final",
+        hardware_guidance: "CPU-safe baseline",
         description: "Fast CPU baseline",
     },
     ModelCatalogEntry {
         id: "small.en",
         file_name: "ggml-small.en.bin",
         gpu: false,
+        expected_size: 487_614_201,
         approx_size_mib: 500,
         sha256: "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+        language: "English",
+        intended_use: "final or preview",
+        hardware_guidance: "CPU-safe quality default",
         description: "Quality CPU default",
     },
     ModelCatalogEntry {
         id: "small.en-q5",
         file_name: "ggml-small.en-q5_1.bin",
         gpu: true,
+        expected_size: 190_098_681,
         approx_size_mib: 200,
         sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+        language: "English",
+        intended_use: "preview",
+        hardware_guidance: "NVIDIA/CUDA preview",
         description: "Fast GPU model, good for preview",
     },
     ModelCatalogEntry {
         id: "large-v3-turbo-q5",
         file_name: "ggml-large-v3-turbo-q5_0.bin",
         gpu: true,
-        approx_size_mib: 1_500,
+        expected_size: 574_041_195,
+        approx_size_mib: 548,
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        language: "Multilingual",
+        intended_use: "final",
+        hardware_guidance: "NVIDIA/CUDA power-user",
         description: "Highest quality CUDA model",
     },
 ];
@@ -64,6 +90,93 @@ pub fn download_url(entry: &ModelCatalogEntry) -> String {
 #[must_use]
 pub fn model_file_path(model_dir: &Path, entry: &ModelCatalogEntry) -> PathBuf {
     model_dir.join(entry.file_name)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedModelRecord {
+    pub catalog_id: String,
+    pub file_name: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedModels {
+    pub catalog_version: u32,
+    #[serde(default)]
+    pub models: BTreeMap<String, ManagedModelRecord>,
+}
+
+impl Default for ManagedModels {
+    fn default() -> Self {
+        Self {
+            catalog_version: CATALOG_VERSION,
+            models: BTreeMap::new(),
+        }
+    }
+}
+
+#[must_use]
+pub fn metadata_path(model_dir: &Path) -> PathBuf {
+    model_dir.join(METADATA_FILE)
+}
+
+pub fn load_managed_models(model_dir: &Path) -> Result<ManagedModels, std::io::Error> {
+    let path = metadata_path(model_dir);
+    if !path.exists() {
+        return Ok(ManagedModels::default());
+    }
+    let bytes = fs::read(&path)?;
+    let metadata: ManagedModels = serde_json::from_slice(&bytes)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if metadata.catalog_version != CATALOG_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "unsupported managed-model metadata version {}",
+                metadata.catalog_version
+            ),
+        ));
+    }
+    Ok(metadata)
+}
+
+pub fn save_managed_models(
+    model_dir: &Path,
+    metadata: &ManagedModels,
+) -> Result<(), std::io::Error> {
+    fs::create_dir_all(model_dir)?;
+    let path = metadata_path(model_dir);
+    let temporary = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(metadata).map_err(std::io::Error::other)?;
+    fs::write(&temporary, bytes)?;
+    fs::rename(temporary, path)
+}
+
+pub fn record_managed_model(
+    model_dir: &Path,
+    entry: &ModelCatalogEntry,
+) -> Result<(), std::io::Error> {
+    let mut metadata = load_managed_models(model_dir)?;
+    metadata.models.insert(
+        entry.id.to_owned(),
+        ManagedModelRecord {
+            catalog_id: entry.id.to_owned(),
+            file_name: entry.file_name.to_owned(),
+            size: entry.expected_size,
+            sha256: entry.sha256.to_owned(),
+        },
+    );
+    save_managed_models(model_dir, &metadata)
+}
+
+#[must_use]
+pub fn catalog_entry_for_path(model_dir: &Path, path: &Path) -> Option<&'static ModelCatalogEntry> {
+    CATALOG
+        .iter()
+        .find(|entry| model_file_path(model_dir, entry) == path)
 }
 
 #[must_use]
@@ -153,5 +266,31 @@ mod tests {
         let ids: Vec<_> = candidates.iter().map(|c| c.id).collect();
         assert!(ids.contains(&"base.en"));
         assert!(ids.contains(&"small.en"));
+    }
+
+    #[test]
+    fn catalog_has_unique_valid_entries() {
+        let mut ids = std::collections::BTreeSet::new();
+        let mut files = std::collections::BTreeSet::new();
+        for entry in CATALOG {
+            assert!(ids.insert(entry.id));
+            assert!(files.insert(entry.file_name));
+            assert!(entry.expected_size > 0);
+            assert_eq!(entry.sha256.len(), 64);
+            assert!(entry.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            assert!(download_url(entry).starts_with("https://"));
+        }
+    }
+
+    #[test]
+    fn managed_metadata_round_trips() {
+        let directory =
+            std::env::temp_dir().join(format!("skald-model-metadata-{}", ulid::Ulid::new()));
+        let entry = &CATALOG[0];
+        record_managed_model(&directory, entry).unwrap();
+        let metadata = load_managed_models(&directory).unwrap();
+        assert_eq!(metadata.catalog_version, CATALOG_VERSION);
+        assert_eq!(metadata.models[entry.id].file_name, entry.file_name);
+        let _ = fs::remove_dir_all(directory);
     }
 }
