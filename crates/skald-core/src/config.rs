@@ -143,6 +143,8 @@ impl PreviewConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct OverlayConfig {
+    /// text | visualizer
+    pub mode: String,
     pub margin_px: u32,
     pub max_width_px: u32,
     /// top | bottom | auto (cursor-aware on supported compositors)
@@ -154,6 +156,7 @@ pub struct OverlayConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
+            mode: "text".into(),
             margin_px: 16,
             max_width_px: 720,
             anchor: "auto".into(),
@@ -823,6 +826,9 @@ fn collect_privacy_reserved_errors(config: &Config, errors: &mut Vec<ConfigError
 }
 
 fn collect_overlay_and_preview_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if !matches!(config.overlay.mode.as_str(), "text" | "visualizer") {
+        push_validation(errors, "overlay.mode must be text or visualizer".into());
+    }
     if !matches!(config.overlay.anchor.as_str(), "top" | "bottom" | "auto") {
         push_validation(errors, "overlay.anchor must be top, bottom, or auto".into());
     }
@@ -985,6 +991,26 @@ mod tests {
             error
                 .to_string()
                 .contains("daemon.log_level must be error, warn, info, debug, or trace")
+        }));
+    }
+
+    #[test]
+    fn accepts_visualizer_overlay_without_preview() {
+        let mut config = Config::default();
+        config.overlay.mode = "visualizer".into();
+        config.preview.enabled = false;
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_overlay_mode() {
+        let mut config = Config::default();
+        config.overlay.mode = "both".into();
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("overlay.mode must be text or visualizer")
         }));
     }
 

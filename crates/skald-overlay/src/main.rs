@@ -6,7 +6,7 @@
 )]
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
     sync::{
@@ -20,7 +20,10 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
-use gtk::{Application, ApplicationWindow, Box as GtkBox, Label, Orientation, glib, prelude::*};
+use gtk::{
+    Application, ApplicationWindow, Box as GtkBox, DrawingArea, Label, Orientation, glib,
+    prelude::*,
+};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use skald_core::{
     client::{self, overlay_event_kinds},
@@ -53,6 +56,8 @@ struct OverlayState {
     visible: bool,
     recording: bool,
     last_markup: String,
+    target_level: f64,
+    display_level: f64,
 }
 
 fn main() -> Result<()> {
@@ -173,9 +178,19 @@ fn build_ui(
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::Word)
         .build();
+    let visualizer = DrawingArea::builder()
+        .height_request(40)
+        .hexpand(true)
+        .build();
+    let drawn_level = Rc::new(Cell::new(0.0_f64));
+    let drawn_level_for_draw = Rc::clone(&drawn_level);
+    visualizer.set_draw_func(move |_, context, width, height| {
+        draw_visualizer(context, width, height, drawn_level_for_draw.get());
+    });
     preview.add_css_class("skald-overlay-preview");
     root.append(&status);
     root.append(&preview);
+    root.append(&visualizer);
     window.set_child(Some(&root));
 
     apply_overlay_css(&window);
@@ -208,7 +223,15 @@ fn build_ui(
         },
         ..OverlayState::default()
     };
-    apply_state(&window, &status, &preview, &mut state);
+    apply_state(
+        &window,
+        &status,
+        &preview,
+        &visualizer,
+        &drawn_level,
+        &overlay_config.mode,
+        &mut state,
+    );
 
     let placement_polling = Arc::new(AtomicBool::new(false));
     let (placement_tx, placement_rx) = mpsc::channel::<OverlayPlacementHint>();
@@ -231,6 +254,8 @@ fn build_ui(
     let window_for_tick = window.clone();
     let status_for_tick = status.clone();
     let preview_for_tick = preview.clone();
+    let visualizer_for_tick = visualizer.clone();
+    let drawn_level_for_tick = Rc::clone(&drawn_level);
     let overlay_config_for_tick = overlay_config.clone();
     let placement_polling_for_tick = Arc::clone(&placement_polling);
     let mut latest_placement: Option<OverlayPlacementHint> = None;
@@ -247,6 +272,7 @@ fn build_ui(
                     state.provisional.clear();
                     state.recording = false;
                     state.last_markup.clear();
+                    state.target_level = 0.0;
                     state.visible = !hide_when_idle;
                 }
                 UiMessage::Event(event) => apply_event(&mut state, *event, hide_when_idle),
@@ -273,6 +299,9 @@ fn build_ui(
             &window_for_tick,
             &status_for_tick,
             &preview_for_tick,
+            &visualizer_for_tick,
+            &drawn_level_for_tick,
+            &overlay_config_for_tick.mode,
             &mut state,
         );
         glib::ControlFlow::Continue
@@ -335,6 +364,7 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
                 state.stable.clear();
                 state.provisional.clear();
                 state.last_markup.clear();
+                state.target_level = 0.0;
             }
         }
         Event::Preview {
@@ -356,6 +386,7 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
             state.stable.clear();
             state.provisional.clear();
             state.last_markup.clear();
+            state.target_level = 0.0;
             state.visible = true;
         }
         Event::Error { error, .. } => {
@@ -363,7 +394,16 @@ fn apply_event(state: &mut OverlayState, event: Event, hide_when_idle: bool) {
             state.stable.clear();
             state.provisional.clear();
             state.last_markup.clear();
+            state.target_level = 0.0;
             state.visible = true;
+        }
+        Event::AudioLevel { rms, peak, .. } => {
+            state.visible = true;
+            state.recording = true;
+            state.target_level = normalized_audio_level(rms, peak);
+            if state.status == "Connected" {
+                state.status = "Recording".into();
+            }
         }
     }
 }
@@ -387,6 +427,9 @@ fn apply_state(
     window: &ApplicationWindow,
     status: &Label,
     preview: &Label,
+    visualizer: &DrawingArea,
+    drawn_level: &Cell<f64>,
+    mode: &str,
     state: &mut OverlayState,
 ) {
     status.set_text(&state.status);
@@ -396,10 +439,56 @@ fn apply_state(
         state.last_markup = markup;
         window.queue_resize();
     }
+    let visualizer_mode = mode == "visualizer";
+    preview.set_visible(!visualizer_mode);
+    visualizer.set_visible(visualizer_mode);
+    let smoothing = if state.target_level > state.display_level {
+        0.45
+    } else {
+        0.16
+    };
+    state.display_level += (state.target_level - state.display_level) * smoothing;
+    if !state.recording {
+        state.target_level = 0.0;
+    }
+    drawn_level.set(state.display_level);
+    visualizer.queue_draw();
     if state.visible {
         window.present();
     } else {
         window.set_visible(false);
+    }
+}
+
+fn normalized_audio_level(rms: f32, peak: f32) -> f64 {
+    let rms = f64::from(rms.clamp(0.0, 1.0));
+    let peak = f64::from(peak.clamp(0.0, 1.0));
+    let rms_db = 20.0 * rms.max(0.000_1).log10();
+    let normalized_rms = ((rms_db + 52.0) / 44.0).clamp(0.0, 1.0);
+    let normalized_peak = (peak / 0.5).clamp(0.0, 1.0);
+    (normalized_rms * 0.8 + normalized_peak * 0.2).clamp(0.0, 1.0)
+}
+
+fn draw_visualizer(context: &gtk::cairo::Context, width: i32, height: i32, level: f64) {
+    const BARS: i32 = 9;
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let gap = 5.0;
+    let bar_width = ((width - gap * f64::from(BARS - 1)) / f64::from(BARS)).max(2.0);
+    context.set_source_rgba(0.55, 0.91, 0.99, 0.22);
+    for index in 0..BARS {
+        let x = f64::from(index) * (bar_width + gap);
+        context.rectangle(x, height * 0.4, bar_width, height * 0.2);
+        let _ = context.fill();
+    }
+    context.set_source_rgb(0.55, 0.91, 0.99);
+    let active_bars = (level * f64::from(BARS)).ceil() as i32;
+    for index in 0..active_bars {
+        let x = f64::from(index) * (bar_width + gap);
+        let position = f64::from(index + 1) / f64::from(BARS);
+        let bar_height = (height * (0.25 + level * (0.75 - position * 0.2))).max(4.0);
+        context.rectangle(x, (height - bar_height) / 2.0, bar_width, bar_height);
+        let _ = context.fill();
     }
 }
 
@@ -499,4 +588,28 @@ fn format_preview_markup(stable: &str, provisional: &str) -> String {
         glib::markup_escape_text(stable),
         glib::markup_escape_text(provisional)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalized_audio_level;
+
+    #[test]
+    fn audio_level_mapping_is_bounded_and_monotonic() {
+        let silence = normalized_audio_level(0.0, 0.0);
+        let quiet = normalized_audio_level(0.01, 0.03);
+        let speech = normalized_audio_level(0.08, 0.2);
+        let loud = normalized_audio_level(1.0, 1.0);
+
+        assert!(silence.abs() < f64::EPSILON);
+        assert!(quiet > silence);
+        assert!(speech > quiet);
+        assert!((loud - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn audio_level_mapping_clamps_invalid_ranges() {
+        assert!(normalized_audio_level(-1.0, -1.0).abs() < f64::EPSILON);
+        assert!((normalized_audio_level(2.0, 2.0) - 1.0).abs() < f64::EPSILON);
+    }
 }

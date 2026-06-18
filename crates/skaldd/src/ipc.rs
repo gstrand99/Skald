@@ -181,73 +181,76 @@ pub(crate) async fn stream_subscribe(
     kinds: Vec<EventKind>,
 ) -> Result<()> {
     let want_preview = kinds.contains(&EventKind::Preview);
-    let want_other = kinds.iter().any(|kind| *kind != EventKind::Preview);
-    if !want_preview {
+    let want_audio_level = kinds.contains(&EventKind::AudioLevel);
+    let want_other = kinds
+        .iter()
+        .any(|kind| !matches!(kind, EventKind::Preview | EventKind::AudioLevel));
+    if !want_preview && !want_audio_level {
         return stream_events(writer, state.events.subscribe(), &kinds).await;
     }
 
     let mut events_rx = state.events.subscribe();
     let mut preview_rx = state.preview.subscribe();
+    let mut audio_level_rx = state.audio.subscribe_levels();
     let _ = preview_rx.borrow_and_update();
+    let _ = audio_level_rx.borrow_and_update();
 
     loop {
-        if want_other && want_preview {
-            tokio::select! {
-                event = events_rx.recv() => match event {
-                    Ok(event) if event_matches(&event, &kinds) => {
-                        write_json_line(writer, &event).await?;
-                    }
-                    Ok(_) => {}
-                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                        debug!(skipped, "event subscriber lagged; skipping ahead");
-                    }
-                    Err(broadcast::error::RecvError::Closed) => return Ok(()),
-                },
-                changed = preview_rx.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    let snapshot = {
-                        let guard = preview_rx.borrow();
-                        guard.clone()
-                    };
-                    if let Some(snapshot) = snapshot {
-                        write_json_line(
-                            writer,
-                            &Event::Preview {
-                                protocol_version: PROTOCOL_VERSION,
-                                timestamp_ms: now_ms(),
-                                job_id: snapshot.job_id,
-                                stable: snapshot.stable,
-                                provisional: snapshot.provisional,
-                                speech_active: snapshot.speech_active,
-                            },
-                        )
-                        .await?;
-                    }
+        tokio::select! {
+            event = events_rx.recv(), if want_other => match event {
+                Ok(event) if event_matches(&event, &kinds) => {
+                    write_json_line(writer, &event).await?;
+                }
+                Ok(_) => {}
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    debug!(skipped, "event subscriber lagged; skipping ahead");
+                }
+                Err(broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            changed = preview_rx.changed(), if want_preview => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                let snapshot = {
+                    let guard = preview_rx.borrow();
+                    guard.clone()
+                };
+                if let Some(snapshot) = snapshot {
+                    write_json_line(
+                        writer,
+                        &Event::Preview {
+                            protocol_version: PROTOCOL_VERSION,
+                            timestamp_ms: now_ms(),
+                            job_id: snapshot.job_id,
+                            stable: snapshot.stable,
+                            provisional: snapshot.provisional,
+                            speech_active: snapshot.speech_active,
+                        },
+                    )
+                    .await?;
                 }
             }
-        } else {
-            if preview_rx.changed().await.is_err() {
-                return Ok(());
-            }
-            let snapshot = {
-                let guard = preview_rx.borrow();
-                guard.clone()
-            };
-            if let Some(snapshot) = snapshot {
-                write_json_line(
-                    writer,
-                    &Event::Preview {
-                        protocol_version: PROTOCOL_VERSION,
-                        timestamp_ms: now_ms(),
-                        job_id: snapshot.job_id,
-                        stable: snapshot.stable,
-                        provisional: snapshot.provisional,
-                        speech_active: snapshot.speech_active,
-                    },
-                )
-                .await?;
+            changed = audio_level_rx.changed(), if want_audio_level => {
+                if changed.is_err() {
+                    return Ok(());
+                }
+                let snapshot = {
+                    let guard = audio_level_rx.borrow();
+                    guard.clone()
+                };
+                if let Some(snapshot) = snapshot {
+                    write_json_line(
+                        writer,
+                        &Event::AudioLevel {
+                            protocol_version: PROTOCOL_VERSION,
+                            timestamp_ms: now_ms(),
+                            job_id: snapshot.job_id,
+                            rms: snapshot.rms,
+                            peak: snapshot.peak,
+                        },
+                    )
+                    .await?;
+                }
             }
         }
     }
