@@ -25,7 +25,7 @@ Examples (when enabled):
 ## Requirements
 
 - `notify-send` must be on `PATH` for notifications to appear.
-- `voxline doctor` lists whether `notify-send` is available.
+- `skald doctor` lists whether `notify-send` is available.
 
 ## Notes
 

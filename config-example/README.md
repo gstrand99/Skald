@@ -1,4 +1,4 @@
-# VoxLine configuration examples
+# Skald configuration examples
 
 Reference configurations for each platform. These files document the supported
 `config.toml` shape; they are not loaded automatically.
@@ -15,7 +15,7 @@ Reference configurations for each platform. These files document the supported
 On Linux, prefer generating a live config with:
 
 ```bash
-voxline config init
+skald config init
 ```
 
-Then validate with `voxline config validate` and `voxline doctor`.
+Then validate with `skald config validate` and `skald doctor`.

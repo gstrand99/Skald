@@ -3,8 +3,8 @@ title: Configuration overview
 description: config.toml location, validation, profiles, and directory layout.
 ---
 
-VoxLine uses a single TOML file at `~/.config/voxline/config.toml`. If the file is
-missing, the daemon and CLI use the same built-in defaults as `voxline config init`.
+Skald uses a single TOML file at `~/.config/skald/config.toml`. If the file is
+missing, the daemon and CLI use the same built-in defaults as `skald config init`.
 
 This path is fixed: `paths.config_dir` relocates styles, apps, and snippets only,
 not `config.toml` itself (the bootstrap loader cannot read a path from a file it has
@@ -13,14 +13,14 @@ not yet loaded).
 ## Commands
 
 ```bash
-voxline config init          # write defaults and scaffold directories
-voxline config validate      # validate against v1 rules
-voxline config path          # print the active config path
-voxline config profile NAME  # apply power-user-nvidia or cpu-safe preset
-voxline doctor               # runtime checks including config and models
+skald config init          # write defaults and scaffold directories
+skald config validate      # validate against v1 rules
+skald config path          # print the active config path
+skald config profile NAME  # apply power-user-nvidia or cpu-safe preset
+skald doctor               # runtime checks including config and models
 ```
 
-Restart `voxlined` after changing ASR, paths, or preview settings.
+Restart `skaldd` after changing ASR, paths, or preview settings.
 
 ## Reference sections
 
@@ -48,7 +48,7 @@ See [Related files](/configuration/related-files/).
 ## Example file
 
 A commented reference copy ships in the repository:
-[`config-example/linux/config.toml`](https://github.com/gstrand/voxline/blob/main/config-example/linux/config.toml).
+[`config-example/linux/config.toml`](https://github.com/gstrand/skald/blob/main/config-example/linux/config.toml).
 
 ## Preset profiles
 
@@ -57,8 +57,8 @@ preserving only `[secrets]` and `[cleanup]`. `cpu-safe` applies CPU-safe ASR and
 lifecycle settings and disables cleanup without a full reset.
 
 ```bash
-voxline config profile power-user-nvidia
-voxline config profile cpu-safe
+skald config profile power-user-nvidia
+skald config profile cpu-safe
 ```
 
 | Profile | ASR | GPU | Lifecycle | Cleanup |
@@ -71,16 +71,16 @@ fixed profile.
 
 ## Directory layout
 
-`voxline config init` creates:
+`skald config init` creates:
 
 ```text
-~/.config/voxline/
+~/.config/skald/
   config.toml
   styles/       # cleanup prompt styles
   apps/         # per-window application profiles
   snippets/     # insert and template snippets
-~/.local/share/voxline/models/    # Whisper GGML files
-$XDG_RUNTIME_DIR/voxline/        # socket and temporary WAVs (runtime_dir = auto)
+~/.local/share/skald/models/    # Whisper GGML files
+$XDG_RUNTIME_DIR/skald/        # socket and temporary WAVs (runtime_dir = auto)
 ```
 
 Tilde paths (`~/...`) in `config.toml` are expanded relative to your home directory.

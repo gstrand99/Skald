@@ -4,7 +4,7 @@ description: Styles, application profiles, and snippets outside config.toml.
 ---
 
 Several features use TOML files under `paths.config_dir` (default
-`~/.config/voxline/`). They are referenced from `config.toml` but edited separately.
+`~/.config/skald/`). They are referenced from `config.toml` but edited separately.
 
 ## Cleanup styles (`styles/`)
 
@@ -19,10 +19,10 @@ Referenced by `[cleanup].default_style`. The `.md` file is the system prompt sen
 OpenRouter.
 
 ```bash
-voxline styles list
-voxline styles new professional
-voxline styles edit professional
-voxline styles validate
+skald styles list
+skald styles new professional
+skald styles edit professional
+skald styles validate
 ```
 
 ## Application profiles (`apps/`)
@@ -36,24 +36,24 @@ Example effects:
 - Attach extra prompt context for cleanup
 
 ```bash
-voxline apps detect
-voxline apps list
-voxline apps edit terminal
-voxline apps validate
+skald apps detect
+skald apps list
+skald apps edit terminal
+skald apps validate
 ```
 
-Bundled `terminal` profile is installed by `voxline config init`.
+Bundled `terminal` profile is installed by `skald config init`.
 
 ## Snippets (`snippets/`)
 
 Named insert targets for static text or template-based structured output.
 
 ```bash
-voxline snippets list
-voxline snippets new signature
-voxline snippets new standup --template
-voxline snippets validate
-voxline toggle --snippet signature
+skald snippets list
+skald snippets new signature
+skald snippets new standup --template
+skald snippets validate
+skald toggle --snippet signature
 ```
 
 Template snippets use OpenRouter JSON extraction; require secrets and network like cleanup.
@@ -69,5 +69,5 @@ When multiple sources apply to one job:
 
 ## Validation
 
-`voxline config validate` checks installed styles when cleanup is enabled, and
-reports issues in apps and snippets via `voxline doctor`.
+`skald config validate` checks installed styles when cleanup is enabled, and
+reports issues in apps and snippets via `skald doctor`.

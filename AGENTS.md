@@ -1,7 +1,7 @@
-# VoxLine Agent Guide
+# Skald Agent Guide
 
-VoxLine is a Linux-first, local-first dictation app written in Rust. Follow
-`VoxLine_implementation_plan.md`, preserve privacy-safe defaults, and keep
+Skald is a Linux-first, local-first dictation app written in Rust. Follow
+`Skald_implementation_plan.md`, preserve privacy-safe defaults, and keep
 changes focused.
 
 ## Workflow
@@ -11,7 +11,7 @@ Before implementing a change:
 1. Sync the merged `main` branch and review the worktree. Commit existing
    intended untracked changes with a short, descriptive message. Never commit
    unrelated or sensitive files.
-2. Read both the relevant GitHub issue and `VoxLine_implementation_plan.md`.
+2. Read both the relevant GitHub issue and `Skald_implementation_plan.md`.
    The implementation document remains the source of truth when an issue is
    abbreviated.
 3. Create a concise issue when one does not exist, add it to the private

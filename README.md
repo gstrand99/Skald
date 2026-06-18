@@ -1,12 +1,12 @@
-# VoxLine
+# Skald
 
-VoxLine is a Linux-first, local-first dictation daemon and CLI. It records,
+Skald is a Linux-first, local-first dictation daemon and CLI. It records,
 transcribes locally, copies the final text to the clipboard, and pastes only
 when the active target can be verified as stable.
 
 ## Configuration
 
-VoxLine reads a single TOML file at `~/.config/voxline/config.toml`. If the file
+Skald reads a single TOML file at `~/.config/skald/config.toml`. If the file
 is missing, built-in defaults apply (same values as the Linux example below).
 
 A commented reference copy lives in
@@ -16,39 +16,60 @@ stubs for future ports are under [`config-example/`](config-example/).
 ### Setup
 
 ```bash
-voxline config init          # write config.toml and scaffold directories
-voxline config validate      # check the file against v1 rules
-voxline config path          # print the active config path
-voxline doctor               # session, paths, daemon, and privacy checks
+skald config init          # write config.toml and scaffold directories
+skald config validate      # check the file against v1 rules
+skald config path          # print the active config path
+skald doctor               # session, paths, daemon, and privacy checks
 ```
 
 `config init` creates:
 
 ```text
-~/.config/voxline/
+~/.config/skald/
   config.toml
   styles/      # cleanup styles (M8a)
   apps/        # per-application profiles (M8b)
   snippets/    # insert snippets (M8c)
-~/.local/share/voxline/models/
-$XDG_RUNTIME_DIR/voxline/    # WAV files, Unix socket (when runtime_dir = "auto")
+~/.local/share/skald/models/
+$XDG_RUNTIME_DIR/skald/    # WAV files, Unix socket (when runtime_dir = "auto")
 ```
 
 Runtime files and the daemon socket use `paths.runtime_dir`. The default `auto`
-resolves to `$XDG_RUNTIME_DIR/voxline`.
+resolves to `$XDG_RUNTIME_DIR/skald`.
 
 ### Preset profiles
 
 ```bash
-voxline config profile power-user-nvidia   # large CUDA model, keep_warm lifecycle
-voxline config profile cpu-safe            # small.en CPU model, on_demand lifecycle
+skald config profile power-user-nvidia   # large CUDA model, keep_warm lifecycle
+skald config profile cpu-safe            # small.en CPU model, on_demand lifecycle
 ```
 
 `power-user-nvidia` resets nearly the entire config to built-in defaults,
 preserving only `[secrets]` and `[cleanup]`. `cpu-safe` applies CPU-safe ASR and
 lifecycle settings and disables cleanup without a full reset.
 
-Restart `voxlined` after changing config if the daemon is already running.
+Restart `skaldd` after changing config if the daemon is already running.
+
+### Migrating from VoxLine
+
+Skald uses new binary, service, config, data, runtime, and keyring names. Stop
+VoxLine before moving an existing installation:
+
+```bash
+systemctl --user disable --now voxlined.service
+mv ~/.config/voxline ~/.config/skald
+mv ~/.local/share/voxline ~/.local/share/skald
+sed -i 's|/voxline|/skald|g; s|voxline/|skald/|g' ~/.config/skald/config.toml
+skald config validate
+skald service install
+systemctl --user daemon-reload
+systemctl --user start skaldd.service
+```
+
+Remove `~/.config/systemd/user/voxlined.service` and the old `voxline`,
+`voxlined`, and `voxline-overlay` binaries after validating Skald. Keyring
+entries are intentionally not copied; run `skald secrets set openrouter` again
+if cleanup was configured through the VoxLine keyring.
 
 ### Config sections
 
@@ -67,11 +88,11 @@ have a specific alternate runtime path.
 
 **`[vocabulary]`** — Custom phrases for ASR biasing and deterministic
 post-transcription replacements (`[[vocabulary.phrases]]`,
-`[[vocabulary.replacements]]`). Manage entries with `voxline vocab`.
+`[[vocabulary.replacements]]`). Manage entries with `skald vocab`.
 
 **`[cleanup]`** — Opt-in cloud cleanup. Disabled by default (`provider = "none"`).
 When enabled with OpenRouter, only transcript text is sent off-device—not audio.
-Enable via `voxline cleanup enable openrouter` or edit config directly. Default
+Enable via `skald cleanup enable openrouter` or edit config directly. Default
 model when enabled: `~openai/gpt-mini-latest`. The cleanup system prompt comes
 from a style under `styles/` (default: `cleanup.default_style = "default"` loads
 `styles/default.toml` → `styles/default.md`). `config init` installs the bundled
@@ -80,12 +101,12 @@ default style files; edit the `.md` file to change cleanup behavior.
 Manage cleanup styles:
 
 ```bash
-voxline styles list
-voxline styles new professional
-voxline styles edit professional
-voxline styles validate
-voxline cleanup preview --style professional "hey john thanks"
-voxline toggle --style professional --cleanup
+skald styles list
+skald styles new professional
+skald styles edit professional
+skald styles validate
+skald cleanup preview --style professional "hey john thanks"
+skald toggle --style professional --cleanup
 ```
 
 Application profiles under `apps/` match the active window at recording start and
@@ -93,41 +114,41 @@ can override cleanup style, disable cleanup, add a prompt layer, or prefer
 clipboard-only paste (the bundled `terminal` profile does the latter two):
 
 ```bash
-voxline apps detect
-voxline apps list
-voxline apps edit terminal
-voxline apps validate
+skald apps detect
+skald apps list
+skald apps edit terminal
+skald apps validate
 ```
 
 Snippets under `snippets/` support static insert content and template snippets:
 
 ```bash
-voxline snippets list
-voxline snippets new signature
-voxline snippets new standup --template
-voxline snippets validate
-voxline snippets insert signature
-voxline snippets preview standup "yesterday I fixed bugs today I'll ship templates blocked nothing"
-voxline toggle --snippet signature
+skald snippets list
+skald snippets new signature
+skald snippets new standup --template
+skald snippets validate
+skald snippets insert signature
+skald snippets preview standup "yesterday I fixed bugs today I'll ship templates blocked nothing"
+skald toggle --snippet signature
 ```
 
 Insert snippets copy static content directly. Template snippets use OpenRouter JSON
 field extraction and render a `{{field}}` template. Route them with a voice command
-such as `voxline standup ...` when `[voice_commands]` is enabled.
+such as `skald standup ...` when `[voice_commands]` is enabled.
 
 Experimental voice commands (opt-in, disabled by default) parse a required
 prefix at the **start** of the transcript after ASR. The default prefix
-`voxline` also matches when ASR splits it into two words (`Vox Line`). They can
+`skald` also matches when ASR splits it into two words (`Skald`). They can
 select a cleanup style or insert a snippet when the remainder is empty:
 
 ```bash
 # enable [voice_commands] in config.toml first
-voxline commands test "voxline professional hey john thanks"
-voxline commands conflicts
+skald commands test "skald professional hey john thanks"
+skald commands conflicts
 ```
 
 **`[secrets]`** — Where to look for API keys. Keys are never stored in
-`config.toml`. Use `voxline secrets set openrouter` (keyring), or set
+`config.toml`. Use `skald secrets set openrouter` (keyring), or set
 `OPENROUTER_API_KEY`, or opt into the insecure file fallback explicitly.
 
 **`[injection]`** — Clipboard-first output. `auto_paste = "safe"` pastes only
@@ -141,18 +162,18 @@ GNOME Wayland defaults to clipboard-only.
 
 **`[preview]`** — Opt-in realtime transcription while recording. Preview uses a
 separate small model (default `ggml-small.en.bin` on CPU) while final transcription
-keeps `[asr]`. Preview text is shown in `voxline watch` only; it is never copied or
+keeps `[asr]`. Preview text is shown in `skald watch` only; it is never copied or
 pasted.
 
 ```bash
-# download ggml-small.en.bin to ~/.local/share/voxline/models/
+# download ggml-small.en.bin to ~/.local/share/skald/models/
 # set preview.enabled = true in config.toml
-voxline watch          # terminal fallback
-voxline overlay        # graphical overlay (separate process)
-voxline toggle
+skald watch          # terminal fallback
+skald overlay        # graphical overlay (separate process)
+skald toggle
 ```
 
-**Overlay (M11)** — `voxline-overlay` subscribes to daemon preview events and
+**Overlay (M11)** — `skald-overlay` subscribes to daemon preview events and
 renders stable/provisional text in a small overlay window. It is a separate
 process and cannot block the daemon. Closing the overlay does not stop an active
 recording.
@@ -162,41 +183,41 @@ recording.
 | Hyprland / X11 | `overlay.anchor = "auto"` places preview near the cursor (above or below by available space) |
 | Hyprland / Sway / River | `top` / `bottom` use a full-width layer-shell bar |
 | GNOME Wayland | floating window; positioning is limited |
-| Headless / SSH | use `voxline watch` instead |
+| Headless / SSH | use `skald watch` instead |
 
-On GNOME Wayland, Mutter does not implement `wlr-layer-shell`, so VoxLine cannot
+On GNOME Wayland, Mutter does not implement `wlr-layer-shell`, so Skald cannot
 anchor a compositor overlay the way it does on Hyprland or Sway. The overlay
 falls back to a normal GTK window. For a universal text-only fallback, use
-`voxline watch`.
+`skald watch`.
 
 ### Secrets and cleanup
 
 ```bash
-voxline secrets set openrouter
-voxline cleanup enable openrouter
-voxline toggle --cleanup        # per-dictation cleanup
-voxline toggle --no-cleanup     # skip cleanup for one job
+skald secrets set openrouter
+skald cleanup enable openrouter
+skald toggle --cleanup        # per-dictation cleanup
+skald toggle --no-cleanup     # skip cleanup for one job
 ```
 
 See [Cleanup (opt-in)](#cleanup-opt-in) below.
 
 ## Linux release
 
-User documentation is published at [docs.voxline.dev](https://docs.voxline.dev) (source in
+User documentation is published at [tryskald.dev](https://tryskald.dev) (source in
 [`docs/`](docs/)): install, setup wizard, configuration, CLI reference,
 troubleshooting, and the Linux desktop matrix.
 
 ```bash
 # GPU (CUDA daemon)
 just release-cuda
-just install-cuda         # install without rebuilding a CPU voxlined
+just install-cuda         # install without rebuilding a CPU skaldd
 
 # CPU-only
 just release
 just install
 
-voxline setup             # interactive probe, models, benchmarks, config
-voxline doctor
+skald setup             # interactive probe, models, benchmarks, config
+skald doctor
 ```
 
 ## Development
@@ -204,8 +225,8 @@ voxline doctor
 ```bash
 cargo build --workspace
 cargo test --workspace
-cargo run -p voxlined -- --foreground
-cargo run -p voxline-cli -- status
+cargo run -p skaldd -- --foreground
+cargo run -p skald-cli -- status
 ```
 
 Useful validation commands:
@@ -222,26 +243,26 @@ just bench-e2e ./sample.wav
 Install the user-session daemon:
 
 ```bash
-voxline service install
-systemctl --user start voxlined
+skald service install
+systemctl --user start skaldd
 ```
 
-`voxline service install` writes `~/.config/systemd/user/voxlined.service`, enables
+`skald service install` writes `~/.config/systemd/user/skaldd.service`, enables
 it, and prints shortcut binding examples for your desktop session.
 
-Bind an external shortcut to `voxline toggle` (or use `voxline start` /
-`voxline stop` / `voxline ptt-start` / `voxline ptt-stop` for push-to-talk where
+Bind an external shortcut to `skald toggle` (or use `skald start` /
+`skald stop` / `skald ptt-start` / `skald ptt-stop` for push-to-talk where
 your compositor supports key-release bindings).
 
 On Hyprland and Sway, import the graphical session environment into systemd
-before starting the service. `voxline service install` and `voxline doctor`
+before starting the service. `skald service install` and `skald doctor`
 print the recommended `systemctl --user import-environment` lines.
 
 ## Paste Safety
 
 Safe paste is supported on X11 with `xdotool`, on Omarchy/Hyprland through the
 compositor's universal `Shift+Insert` shortcut, and on Sway with `wtype`.
-VoxLine captures the active target when recording starts, when it stops, and
+Skald captures the active target when recording starts, when it stops, and
 immediately before paste. A changed, unknown, or stale target falls back to
 clipboard-only output.
 
@@ -250,21 +271,21 @@ Omarchy/Hyprland default to clipboard-only behavior. Application profiles will
 add more target-specific paste commands later.
 
 The product and architecture specification is in
-[`VoxLine_implementation_plan.md`](VoxLine_implementation_plan.md).
+[`Skald_implementation_plan.md`](Skald_implementation_plan.md).
 
 ## Cleanup (opt-in)
 
 Cleanup is disabled by default. To enable OpenRouter cleanup:
 
 ```bash
-voxline secrets set openrouter
-voxline cleanup enable openrouter
-voxline cleanup preview "hey john thanks for catching that"
-voxline toggle --cleanup
+skald secrets set openrouter
+skald cleanup enable openrouter
+skald cleanup preview "hey john thanks for catching that"
+skald toggle --cleanup
 ```
 
 The default cleanup model is `~openai/gpt-mini-latest` on OpenRouter. Override
-`cleanup.model` in `~/.config/voxline/config.toml` if needed.
+`cleanup.model` in `~/.config/skald/config.toml` if needed.
 
 Cleanup sends transcript text to your configured provider, adds latency, and may
 cost money per request. Use `--no-cleanup` for sensitive content or when you want
@@ -272,7 +293,7 @@ the raw transcript.
 
 ## Privacy
 
-VoxLine does not store transcripts or audio by default. Cloud cleanup is opt-in
+Skald does not store transcripts or audio by default. Cloud cleanup is opt-in
 and sends transcript text off-device only when explicitly enabled.
 
 ## License

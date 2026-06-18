@@ -1,0 +1,23 @@
+[package]
+name = "skald-overlay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "skald-overlay"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+gtk4-layer-shell = "0.8"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+skald-core = { path = "../skald-core" }
+skald-platform = { path = "../skald-platform" }
+
+[lints]
+workspace = true

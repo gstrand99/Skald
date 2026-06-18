@@ -4,7 +4,7 @@ description: Realtime transcription while recording.
 ---
 
 Optional streaming ASR on a **separate small model** while you record. Preview text
-is shown in `voxline watch` or the overlay; it is **never** copied or pasted.
+is shown in `skald watch` or the overlay; it is **never** copied or pasted.
 
 ```toml
 [preview]
@@ -14,7 +14,7 @@ step_ms = 1000
 overlap_ms = 500
 min_rms_energy = 0.003
 ring_buffer_seconds = 30
-model_path = "~/.local/share/voxline/models/ggml-small.en.bin"
+model_path = "~/.local/share/skald/models/ggml-small.en.bin"
 gpu = false
 threads = 0
 ```
@@ -37,14 +37,14 @@ threads = 0
 
 ```bash
 # Set preview.enabled = true, download small model, restart daemon
-voxline watch
-voxline overlay
-voxline toggle
+skald watch
+skald overlay
+skald toggle
 ```
 
 ## Validation rules
 
-When `enabled = true`, `voxline config validate` requires:
+When `enabled = true`, `skald config validate` requires:
 
 - `chunk_ms` and `step_ms` are positive
 - `overlap_ms` is less than `chunk_ms`

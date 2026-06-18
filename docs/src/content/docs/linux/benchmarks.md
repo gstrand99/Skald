@@ -4,7 +4,7 @@ description: Reference workstation latency measurements.
 ---
 
 Recorded on the primary development machine (Ryzen 5900X-class, RTX 3070 Ti,
-Hyprland Wayland, CUDA `voxlined` build, `power-user-nvidia` profile, warm ASR
+Hyprland Wayland, CUDA `skaldd` build, `power-user-nvidia` profile, warm ASR
 model).
 
 ## Fixtures
@@ -16,7 +16,7 @@ model).
 
 `bench dictation` reads an existing WAV and does not delete the source file.
 
-## Transcribe only (`voxline bench end-to-end`)
+## Transcribe only (`skald bench end-to-end`)
 
 Long fixture (~50 s):
 
@@ -31,9 +31,9 @@ Short fixture (~4.9 s):
 |-----|-------|------------|------------|-----------|
 | Warm | 4906 ms | 0 ms | 263 ms | 263 ms |
 
-Cold model load (`voxline bench model-load` after unload): **125–139 ms**.
+Cold model load (`skald bench model-load` after unload): **125–139 ms**.
 
-## Full dictation path (`voxline bench dictation`)
+## Full dictation path (`skald bench dictation`)
 
 Short fixture (~4.9 s), cleanup disabled (`--no-cleanup`):
 

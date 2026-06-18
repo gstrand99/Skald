@@ -30,7 +30,7 @@ log_transcripts = false
 
 ## Doctor and warnings
 
-`voxline doctor` reports when `store_audio`, `log_transcripts`, or
+`skald doctor` reports when `store_audio`, `log_transcripts`, or
 `emit_transcript_in_events` is enabled. Reserved storage flags are not treated as
 active controls.
 
@@ -44,5 +44,5 @@ Cloud cleanup is configured separately in `[cleanup]` and sends transcript text 
 
 ## Notes
 
-- Enabling `log_transcripts` can leak dictated content into journald or terminal output when `voxlined` runs in the foreground.
-- Setup wizard fixture audio is stored at `~/.local/share/voxline/models/samples/setup.wav` (under `paths.model_dir`) regardless of `store_audio`.
+- Enabling `log_transcripts` can leak dictated content into journald or terminal output when `skaldd` runs in the foreground.
+- Setup wizard fixture audio is stored at `~/.local/share/skald/models/samples/setup.wav` (under `paths.model_dir`) regardless of `store_audio`.

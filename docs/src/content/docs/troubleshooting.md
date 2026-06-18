@@ -6,7 +6,7 @@ description: Doctor checks, common failures, and privacy verification.
 ## Run the doctor
 
 ```bash
-voxline doctor
+skald doctor
 ```
 
 Doctor reports session type, desktop, tool availability, config validity, runtime
@@ -15,11 +15,11 @@ secrets status, and privacy flags. Follow printed **Suggestions** for remediatio
 
 Common suggestions:
 
-- Run `voxline setup` when first-time configuration is incomplete.
-- Start the daemon: `voxlined --foreground` or `systemctl --user start voxlined`.
+- Run `skald setup` when first-time configuration is incomplete.
+- Start the daemon: `skaldd --foreground` or `systemctl --user start skaldd`.
 - Download a GGML model to the configured `asr.model_path`.
 - Import the graphical session into systemd when CLI and daemon environments differ.
-- Run `voxline secrets set openrouter` before enabling cleanup.
+- Run `skald secrets set openrouter` before enabling cleanup.
 
 ## Failure modes
 
@@ -39,32 +39,32 @@ Common suggestions:
 ## Cannot connect to socket
 
 ```text
-cannot connect to .../voxlined.sock; is voxlined running?
+cannot connect to .../skaldd.sock; is skaldd running?
 ```
 
 Start the daemon:
 
 ```bash
-voxlined --foreground
+skaldd --foreground
 # or
-systemctl --user start voxlined
+systemctl --user start skaldd
 ```
 
 Verify the socket is user-owned mode `0600`:
 
 ```bash
-ls -la $XDG_RUNTIME_DIR/voxline/voxlined.sock
+ls -la $XDG_RUNTIME_DIR/skald/skaldd.sock
 ```
 
 ## CUDA build mismatch
 
-If `asr.gpu = true` but `voxlined` was built CPU-only, model load fails with an
+If `asr.gpu = true` but `skaldd` was built CPU-only, model load fails with an
 unsupported-feature error. Rebuild with `just release-cuda` or set `gpu = false`.
 
 ## Privacy checks
 
 - `[privacy]` defaults: no storage, no transcript logging
-- `voxline doctor` reports sensitive options when enabled
+- `skald doctor` reports sensitive options when enabled
 - Cleanup off by default; enabling shows a doctor warning
 - Daemon socket mode `0600`, runtime dir mode `0700`
 

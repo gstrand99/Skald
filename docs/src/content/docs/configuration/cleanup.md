@@ -34,18 +34,18 @@ skip_if_word_count_below = 5
 ## Enabling cleanup
 
 ```bash
-voxline secrets set openrouter
-voxline cleanup enable openrouter
-voxline cleanup disable
-voxline cleanup preview "hey john thanks for the update"
-voxline toggle --cleanup
+skald secrets set openrouter
+skald cleanup enable openrouter
+skald cleanup disable
+skald cleanup preview "hey john thanks for the update"
+skald toggle --cleanup
 ```
 
-Per-job overrides: `voxline toggle --cleanup` / `--no-cleanup`.
+Per-job overrides: `skald toggle --cleanup` / `--no-cleanup`.
 
 ## Styles
 
-Cleanup prompts live in `~/.config/voxline/styles/`:
+Cleanup prompts live in `~/.config/skald/styles/`:
 
 ```text
 styles/default.toml    # metadata (name, description)
@@ -53,9 +53,9 @@ styles/default.md      # system prompt body
 ```
 
 ```bash
-voxline styles list
-voxline styles edit professional
-voxline styles validate
+skald styles list
+skald styles edit professional
+skald styles validate
 ```
 
 `cleanup.default_style` must reference an installed, valid style when cleanup is enabled.
@@ -68,5 +68,5 @@ See [Related files](/configuration/related-files/).
 ## Privacy
 
 - Enabling cleanup sends transcript text to your configured provider.
-- `voxline doctor` warns when cleanup is enabled.
+- `skald doctor` warns when cleanup is enabled.
 - Costs depend on your OpenRouter model and usage.
