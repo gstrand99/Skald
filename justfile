@@ -133,6 +133,35 @@ asr-load: build
 asr-status: build
     target/debug/skald asr status
 
+# List managed ASR model candidates and installed state.
+models-list: build
+    target/debug/skald models list
+
+# Verify installed catalog models without loading them.
+models-verify: build
+    target/debug/skald models verify
+
+# Install a catalog model by stable ID.
+models-install model: build
+    target/debug/skald models install {{model}}
+
+# Select a catalog model for final ASR.
+models-select model: build
+    target/debug/skald models select {{model}}
+
+# Select a catalog model for text preview.
+models-select-preview model: build
+    target/debug/skald models select-preview {{model}}
+
+# Review unused managed models for removal.
+models-prune: build
+    target/debug/skald models prune
+
+# Manual managed-model validation without downloading model weights.
+models-check: build
+    target/debug/skald models list
+    target/debug/skald models verify || true
+
 # Benchmark transcription for a WAV file.
 bench-asr wav: build
     target/debug/skald bench asr {{wav}}

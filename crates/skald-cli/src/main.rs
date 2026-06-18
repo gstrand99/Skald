@@ -1,6 +1,7 @@
 mod apps_cmd;
 mod cleanup_cmd;
 mod commands_cmd;
+mod models_cmd;
 mod secrets_cmd;
 mod service;
 mod setup_cmd;
@@ -63,6 +64,10 @@ enum Commands {
     Asr {
         #[command(subcommand)]
         command: AsrCommands,
+    },
+    Models {
+        #[command(subcommand)]
+        command: models_cmd::ModelsCommands,
     },
     Bench {
         #[command(subcommand)]
@@ -295,6 +300,9 @@ struct AsrReport {
     backend: String,
     model_path: String,
     model_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_id: Option<String>,
+    integrity: String,
     gpu_requested: bool,
     lifecycle_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -305,6 +313,9 @@ struct AsrReport {
 struct PreviewReport {
     model_path: String,
     model_exists: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    catalog_id: Option<String>,
+    integrity: String,
     gpu_requested: bool,
 }
 
@@ -393,6 +404,7 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Config { command } => config(&command)?,
+        Commands::Models { command } => models_cmd::run(&command).await?,
         Commands::Service { command } => service_command(&command)?,
         Commands::Secrets { command } => secrets_cmd::run(command)?,
         Commands::Cleanup { command } => match command {
@@ -791,15 +803,53 @@ fn print_cleanup_response(response: &Response) -> Result<()> {
     print_response(response)
 }
 
-fn preview_doctor_report(config: &Config) -> Option<PreviewReport> {
-    config.preview_enabled_effective().then(|| {
+async fn model_integrity(
+    model_dir: &std::path::Path,
+    model_path: &std::path::Path,
+) -> (Option<String>, String) {
+    let Some(entry) = skald_core::models::catalog_entry_for_path(model_dir, model_path) else {
+        return (
+            None,
+            if model_path.is_file() {
+                "unverified user-managed path".into()
+            } else {
+                "missing unverified path".into()
+            },
+        );
+    };
+    if !model_path.is_file() {
+        return (Some(entry.id.into()), "missing".into());
+    }
+    let integrity = match skald_core::download::verify_model_file(
+        model_path,
+        entry.expected_size,
+        entry.sha256,
+    )
+    .await
+    {
+        Ok(()) => "verified".into(),
+        Err(error) => format!("invalid: {error}"),
+    };
+    (Some(entry.id.into()), integrity)
+}
+
+async fn preview_doctor_report(
+    config: &Config,
+    model_dir: &std::path::Path,
+) -> Option<PreviewReport> {
+    if config.preview_enabled_effective() {
         let preview_model_path = paths::expand_home(&config.preview.effective_model_path());
-        PreviewReport {
+        let (catalog_id, integrity) = model_integrity(model_dir, &preview_model_path).await;
+        Some(PreviewReport {
             model_path: preview_model_path.display().to_string(),
             model_exists: preview_model_path.is_file(),
+            catalog_id,
+            integrity,
             gpu_requested: config.preview.gpu,
-        }
-    })
+        })
+    } else {
+        None
+    }
 }
 
 async fn doctor(json: bool) -> Result<()> {
@@ -858,7 +908,9 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
     let desktop = cli_environment.desktop.as_deref().unwrap_or("unknown");
     let trigger = trigger_guidance(session, desktop);
     let model_path = paths::expand_home(&config.asr.model_path);
-    let preview = preview_doctor_report(config);
+    let model_dir = paths::resolve_model_dir(&config.paths);
+    let (catalog_id, integrity) = model_integrity(&model_dir, &model_path).await;
+    let preview = preview_doctor_report(config, &model_dir).await;
     let audio = probe_audio_input();
     let daemon_model_state = if daemon_reachable {
         fetch_daemon_asr_state().await
@@ -900,6 +952,8 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
             backend: config.asr.backend.clone(),
             model_path: model_path.display().to_string(),
             model_exists: model_path.is_file(),
+            catalog_id,
+            integrity,
             gpu_requested: config.asr.gpu,
             lifecycle_mode: config.asr.lifecycle.mode.clone(),
             daemon_model_state,
@@ -1158,6 +1212,10 @@ fn print_doctor(report: &DoctorReport) {
     println!("  Backend: {}", report.asr.backend);
     println!("  Model: {}", report.asr.model_path);
     println!("  Model exists: {}", yes_no(report.asr.model_exists));
+    if let Some(id) = &report.asr.catalog_id {
+        println!("  Catalog ID: {id}");
+    }
+    println!("  Integrity: {}", report.asr.integrity);
     println!("  GPU requested: {}", yes_no(report.asr.gpu_requested));
     println!("  Lifecycle: {}", report.asr.lifecycle_mode);
     if let Some(state) = &report.asr.daemon_model_state {
@@ -1167,6 +1225,10 @@ fn print_doctor(report: &DoctorReport) {
         println!("Preview:");
         println!("  Model: {}", preview.model_path);
         println!("  Model exists: {}", yes_no(preview.model_exists));
+        if let Some(id) = &preview.catalog_id {
+            println!("  Catalog ID: {id}");
+        }
+        println!("  Integrity: {}", preview.integrity);
         println!("  GPU requested: {}", yes_no(preview.gpu_requested));
     }
     println!("Paste:");
@@ -1220,13 +1282,19 @@ fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
             .push("Start the daemon with `skald service start` or `skaldd --foreground`.".into());
     }
     if !report.asr.model_exists {
-        suggestions.push("Download a GGML Whisper model to the configured asr.model_path.".into());
+        suggestions
+            .push("Run `skald models list`, then install and select a catalog model.".into());
+    } else if report.asr.integrity != "verified" && report.asr.catalog_id.is_some() {
+        let id = report.asr.catalog_id.as_deref().unwrap_or_default();
+        suggestions.push(format!(
+            "Run `skald models verify {id}`; remove the invalid file before reinstalling it."
+        ));
     }
     if let Some(preview) = &report.preview
         && !preview.model_exists
     {
         suggestions.push(
-            "Download a small preview model or set preview.enabled = false in config.".into(),
+            "Run `skald models install small.en` and `skald models select-preview small.en`, or disable text preview.".into(),
         );
     }
     if report.environment_mismatch.is_some() {
@@ -1320,6 +1388,7 @@ fn bench_transcribe(response: &Response, json: bool) -> Result<()> {
         bail!("daemon response did not include benchmark timings");
     };
     println!("Skald benchmark (transcribe only)");
+    print_configured_model_id();
     print_asr_benchmark(benchmark, response.cleanup_ms);
     Ok(())
 }
@@ -1337,6 +1406,7 @@ fn bench_dictation(response: &Response, json: bool) -> Result<()> {
         bail!("daemon response did not include dictation benchmark data");
     };
     println!("Skald benchmark (full dictation path)");
+    print_configured_model_id();
     print_asr_benchmark(&dictation.benchmark, response.cleanup_ms);
     if dictation.paste_succeeded {
         println!("  Stop-to-insert:    {} ms", dictation.total_ms);
@@ -1352,6 +1422,19 @@ fn bench_dictation(response: &Response, json: bool) -> Result<()> {
     println!("  Cleanup used:      {}", yes_no(dictation.cleanup_used));
     println!("  Insertion:         {}", dictation.insertion_reason);
     Ok(())
+}
+
+fn print_configured_model_id() {
+    let Ok(config) = Config::load_or_default() else {
+        return;
+    };
+    let model_dir = paths::resolve_model_dir(&config.paths);
+    let model_path = paths::expand_home(&config.asr.model_path);
+    if let Some(entry) = skald_core::models::catalog_entry_for_path(&model_dir, &model_path) {
+        println!("  Catalog model:  {}", entry.id);
+    } else {
+        println!("  Catalog model:  unverified custom path");
+    }
 }
 
 fn print_asr_benchmark(benchmark: &skald_core::protocol::AsrBenchmark, cleanup_ms: Option<u64>) {

@@ -62,6 +62,21 @@ Push-to-talk aliases: `skald ptt-start`, `skald ptt-stop`.
 
 Dictation bench flags: `--no-cleanup`, `--cleanup`, `--paste`, `--json`.
 
+## Managed models
+
+| Command | Description |
+|---------|-------------|
+| `skald models list` | Show catalog models, installed state, size, and intended use |
+| `skald models install ID` | Download, verify, and atomically install a catalog model |
+| `skald models verify [ID]` | Check exact size and SHA-256 without loading a model |
+| `skald models select ID` | Select the final ASR model |
+| `skald models select-preview ID` | Select the text-preview model |
+| `skald models remove ID` | Confirm and remove an unused Skald-managed model |
+| `skald models prune` | Review and remove unused managed models |
+
+Skald never removes arbitrary model files. Cleanup is limited to files recorded
+in `managed-models.json`, and configured or loaded models are protected.
+
 ## Cleanup and secrets
 
 ```bash
