@@ -10,6 +10,8 @@ use crate::{
     snippets, styles,
 };
 
+pub const CURRENT_CONFIG_VERSION: u32 = 2;
+
 #[derive(Debug, Error)]
 pub enum ConfigError {
     #[error("could not determine the user configuration directory")]
@@ -31,18 +33,24 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error(
+        "cannot migrate configuration version {found}; supported versions are 1 through {current}"
+    )]
+    UnsupportedVersion { found: u32, current: u32 },
+    #[error("configuration migration failed: {0}")]
+    Migration(String),
     #[error("invalid configuration: {0}")]
     Validation(String),
 }
 
 fn default_config_version() -> u32 {
-    1
+    CURRENT_CONFIG_VERSION
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    /// Schema version for future migrations. Must be `1` in v1.
+    /// Schema version used by the migration pipeline.
     #[serde(default = "default_config_version")]
     pub config_version: u32,
     pub daemon: DaemonConfig,
@@ -530,8 +538,23 @@ impl Config {
             path: path.clone(),
             source,
         })?;
-        let config = toml::from_str(&text).map_err(|source| ConfigError::Parse { path, source })?;
-        Ok(config)
+        Self::from_toml(&text).map_err(|error| match error {
+            ConfigError::Parse { source, .. } => ConfigError::Parse { path, source },
+            other => other,
+        })
+    }
+
+    pub fn from_toml(text: &str) -> Result<Self, ConfigError> {
+        let mut value =
+            toml::from_str::<toml::Value>(text).map_err(|source| ConfigError::Parse {
+                path: PathBuf::from("<memory>"),
+                source,
+            })?;
+        migrate_config(&mut value)?;
+        value.try_into().map_err(|source| ConfigError::Parse {
+            path: PathBuf::from("<memory>"),
+            source,
+        })
     }
 
     /// Loads the config file (or defaults when missing) and runs [`Self::validate`].
@@ -564,6 +587,22 @@ impl Config {
             source,
         })?;
         Ok(path)
+    }
+
+    pub fn upgrade() -> Result<PathBuf, ConfigError> {
+        let config = Self::load_or_default()?;
+        scaffold_config_layout(&config.paths).map_err(|source| ConfigError::Write {
+            path: paths::resolve_config_dir(&config.paths),
+            source,
+        })?;
+        styles::ensure_default_style_files(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        apps::ensure_default_app_profiles(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        snippets::ensure_snippets_dir(&config.paths)
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+        config.validate()?;
+        config.save()
     }
 
     pub fn apply_profile(&mut self, profile: &str) -> Result<(), ConfigError> {
@@ -657,12 +696,12 @@ fn push_validation(errors: &mut Vec<ConfigError>, message: String) {
 }
 
 fn collect_schema_errors(config: &Config, errors: &mut Vec<ConfigError>) {
-    if config.config_version != 1 {
+    if config.config_version != CURRENT_CONFIG_VERSION {
         push_validation(
             errors,
             format!(
-                "config_version must be 1 (found {}); see docs for upgrading",
-                config.config_version
+                "config_version must be {CURRENT_CONFIG_VERSION} after migration (found {})",
+                config.config_version,
             ),
         );
     }
@@ -681,6 +720,60 @@ fn collect_schema_errors(config: &Config, errors: &mut Vec<ConfigError>) {
             "daemon.log_level must be error, warn, info, debug, or trace".into(),
         );
     }
+}
+
+fn migrate_config(value: &mut toml::Value) -> Result<(), ConfigError> {
+    let table = value
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::Migration("top-level TOML value must be a table".into()))?;
+    let version = table
+        .get("config_version")
+        .and_then(toml::Value::as_integer)
+        .unwrap_or(1);
+    let version = u32::try_from(version).map_err(|_| ConfigError::UnsupportedVersion {
+        found: 0,
+        current: CURRENT_CONFIG_VERSION,
+    })?;
+    if !(1..=CURRENT_CONFIG_VERSION).contains(&version) {
+        return Err(ConfigError::UnsupportedVersion {
+            found: version,
+            current: CURRENT_CONFIG_VERSION,
+        });
+    }
+
+    let mut current = version;
+    while current < CURRENT_CONFIG_VERSION {
+        match current {
+            1 => migrate_v1_to_v2(table)?,
+            _ => {
+                return Err(ConfigError::UnsupportedVersion {
+                    found: current,
+                    current: CURRENT_CONFIG_VERSION,
+                });
+            }
+        }
+        current += 1;
+        table.insert(
+            "config_version".into(),
+            toml::Value::Integer(i64::from(current)),
+        );
+    }
+    Ok(())
+}
+
+fn migrate_v1_to_v2(table: &mut toml::Table) -> Result<(), ConfigError> {
+    let Some(overlay) = table.get_mut("overlay").and_then(toml::Value::as_table_mut) else {
+        return Ok(());
+    };
+    if let Some(style) = overlay.remove("style") {
+        if overlay.contains_key("visualizer_style") {
+            return Err(ConfigError::Migration(
+                "v1 overlay cannot contain both style and visualizer_style".into(),
+            ));
+        }
+        overlay.insert("visualizer_style".into(), style);
+    }
+    Ok(())
 }
 
 fn collect_audio_errors(config: &Config, errors: &mut Vec<ConfigError>) {
@@ -959,8 +1052,50 @@ mod tests {
     #[test]
     fn linux_example_config_is_valid() {
         let text = include_str!("../../../config-example/linux/config.toml");
-        let config: Config = toml::from_str(text).expect("example config should parse");
+        let config = Config::from_toml(text).expect("example config should parse");
         config.validate().expect("example config should validate");
+    }
+
+    #[test]
+    fn current_version_is_a_no_op_migration() {
+        let text = toml::to_string(&Config::default()).unwrap();
+        let config = Config::from_toml(&text).unwrap();
+        assert_eq!(config.config_version, CURRENT_CONFIG_VERSION);
+    }
+
+    #[test]
+    fn migrates_v1_overlay_style_to_v2_visualizer_style() {
+        let text = "config_version = 1\n[overlay]\nstyle = \"bars\"\n";
+        let config = Config::from_toml(text).unwrap();
+        assert_eq!(config.config_version, 2);
+        assert_eq!(config.overlay.visualizer_style, "bars");
+    }
+
+    #[test]
+    fn rejects_unsupported_future_config_version() {
+        let error = Config::from_toml("config_version = 99").unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot migrate configuration version 99")
+        );
+    }
+
+    #[test]
+    fn migration_preserves_user_values_and_adds_current_defaults() {
+        let text = r#"
+config_version = 1
+
+[daemon]
+log_level = "debug"
+
+[overlay]
+style = "dots"
+"#;
+        let config = Config::from_toml(text).unwrap();
+        assert_eq!(config.daemon.log_level, "debug");
+        assert_eq!(config.overlay.visualizer_style, "dots");
+        assert_eq!(config.overlay.margin_px, OverlayConfig::default().margin_px);
     }
 
     #[test]

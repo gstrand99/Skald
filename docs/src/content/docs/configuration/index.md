@@ -14,13 +14,28 @@ not yet loaded).
 
 ```bash
 skald config init          # write defaults and scaffold directories
-skald config validate      # validate against v1 rules
+skald config validate      # migrate in memory and validate current rules
+skald config upgrade       # rewrite with migrated schema and new defaults
 skald config path          # print the active config path
 skald config profile NAME  # apply power-user-nvidia or cpu-safe preset
 skald doctor               # runtime checks including config and models
 ```
 
 Restart `skaldd` after changing ASR, paths, or preview settings.
+
+## Config versions and migration
+
+`config_version` identifies the on-disk schema. Skald migrates supported older
+versions in memory before deserialization and validation; loading does not rewrite
+the file. `skald config upgrade` preserves configured values, writes the current
+schema and newly defaulted fields, and refreshes optional config directories and
+built-in files.
+
+Version 2 renames the former `[overlay]` key `style` to `visualizer_style`.
+Configs without that legacy key migrate without other changes. Versions newer
+than the running binary, versions older than the supported migration chain, and
+ambiguous migrations fail with a clear error. Run `skald config validate` or
+`skald doctor` to report migration and validation failures.
 
 ## Reference sections
 

@@ -6,7 +6,7 @@ use std::{
 };
 
 use skald_core::{
-    config::{AsrConfig, VocabularyConfig},
+    config::{AsrConfig, Config, VocabularyConfig},
     protocol::{AsrBenchmark, Transcript, TranscriptSegment},
     text::apply_vocabulary_replacements,
 };
@@ -45,6 +45,7 @@ enum Command {
     },
     Transcribe {
         path: PathBuf,
+        vocabulary: Option<VocabularyConfig>,
         reply: oneshot::Sender<Result<(Transcript, AsrBenchmark), AsrError>>,
     },
 }
@@ -210,15 +211,32 @@ impl AsrManager {
     }
 
     pub async fn transcribe(&self, path: PathBuf) -> Result<(Transcript, AsrBenchmark), AsrError> {
+        let vocabulary = match Config::load_validated() {
+            Ok(config) => Some(config.vocabulary),
+            Err(error) => {
+                tracing::warn!(%error, "keeping last valid vocabulary configuration");
+                None
+            }
+        };
         let (reply, response) = oneshot::channel();
         self.commands
-            .send(Command::Transcribe { path, reply })
+            .send(Command::Transcribe {
+                path,
+                vocabulary,
+                reply,
+            })
             .map_err(|_| AsrError::WorkerStopped)?;
         response.await.map_err(|_| AsrError::WorkerStopped)?
     }
 }
 
 impl Worker {
+    fn update_vocabulary(&mut self, vocabulary: Option<VocabularyConfig>) {
+        if let Some(vocabulary) = vocabulary {
+            self.vocabulary = vocabulary;
+        }
+    }
+
     #[allow(clippy::needless_pass_by_value)]
     fn run(&mut self, receiver: mpsc::Receiver<Command>) {
         loop {
@@ -250,7 +268,12 @@ impl Worker {
                     self.engine.config = config;
                     let _ = reply.send(self.engine.load());
                 }
-                Command::Transcribe { path, reply } => {
+                Command::Transcribe {
+                    path,
+                    vocabulary,
+                    reply,
+                } => {
+                    self.update_vocabulary(vocabulary);
                     let _ = reply.send(self.transcribe(&path));
                 }
             }
@@ -443,6 +466,31 @@ fn elapsed_ms(started: Instant) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use skald_core::config::VocabularyPhrase;
+
+    #[test]
+    fn vocabulary_snapshots_apply_per_job_and_invalid_reload_keeps_last_valid() {
+        let mut source = VocabularyConfig {
+            phrases: vec![VocabularyPhrase {
+                text: "First".into(),
+            }],
+            ..VocabularyConfig::default()
+        };
+        let first_job_snapshot = source.clone();
+        source.phrases[0].text = "Second".into();
+        let second_job_snapshot = source.clone();
+
+        let mut worker = Worker {
+            engine: WhisperEngine::new(AsrConfig::default()),
+            vocabulary: VocabularyConfig::default(),
+        };
+        worker.update_vocabulary(Some(first_job_snapshot));
+        assert_eq!(worker.initial_prompt().as_deref(), Some("First"));
+        worker.update_vocabulary(Some(second_job_snapshot));
+        assert_eq!(worker.initial_prompt().as_deref(), Some("Second"));
+        worker.update_vocabulary(None);
+        assert_eq!(worker.initial_prompt().as_deref(), Some("Second"));
+    }
 
     #[test]
     fn filters_only_short_exact_hallucinations() {

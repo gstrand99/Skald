@@ -6,7 +6,7 @@ description: Local storage and transcript logging controls.
 All options default to **off** for a local-first, privacy-safe baseline.
 
 ```toml
-config_version = 1
+config_version = 2
 
 [privacy]
 store_history = false
@@ -16,7 +16,7 @@ store_cleaned_transcript = false
 log_transcripts = false
 ```
 
-`config_version` must be `1` in v1. Future releases may use it for migrations.
+`config_version` is migrated in memory when an older supported schema is loaded.
 
 ## Options
 

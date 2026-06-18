@@ -53,8 +53,11 @@ skald vocab add phrase "My Project"
 skald vocab add replace "open router" "OpenRouter"
 ```
 
-CLI edits rewrite `config.toml`. Restart `skaldd` after vocabulary changes: the ASR
-worker captures vocabulary when it spawns at daemon start.
+CLI edits rewrite `config.toml`. Each new transcription loads one validated
+vocabulary snapshot, so phrase and replacement changes apply without restarting
+`skaldd`. An in-flight transcription keeps the snapshot it started with. If the
+edited config is invalid, the daemon logs the validation error and keeps the last
+valid vocabulary.
 
 ## Notes
 

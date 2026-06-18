@@ -17,7 +17,8 @@ stubs for future ports are under [`config-example/`](config-example/).
 
 ```bash
 skald config init          # write config.toml and scaffold directories
-skald config validate      # check the file against v1 rules
+skald config validate      # migrate in memory and validate current rules
+skald config upgrade       # persist migrations and newly defaulted fields
 skald config path          # print the active config path
 skald doctor               # session, paths, daemon, and privacy checks
 ```
