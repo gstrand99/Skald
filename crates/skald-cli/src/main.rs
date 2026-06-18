@@ -174,6 +174,8 @@ enum ConfigCommands {
         force: bool,
     },
     Validate,
+    /// Migrate, validate, and rewrite config with current defaulted fields.
+    Upgrade,
     Profile {
         name: String,
     },
@@ -513,6 +515,10 @@ fn config(command: &ConfigCommands) -> Result<()> {
         ConfigCommands::Validate => {
             Config::load_validated()?;
             println!("configuration is valid");
+        }
+        ConfigCommands::Upgrade => {
+            let path = Config::upgrade()?;
+            println!("Upgraded configuration at {}", path.display());
         }
         ConfigCommands::Profile { name } => {
             let mut config = Config::load_or_default()?;
