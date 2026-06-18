@@ -27,7 +27,7 @@ use cpal::{
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
 use gtk::{
-    Application, ApplicationWindow, Box as GtkBox, DrawingArea, Label, Orientation, glib,
+    Application, ApplicationWindow, Box as GtkBox, DrawingArea, Label, Orientation, gio, glib,
     prelude::*,
 };
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -133,10 +133,13 @@ fn main() -> Result<()> {
 
     let app = Application::builder()
         .application_id("dev.skald.Overlay")
+        .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     let ui_rx = Rc::new(RefCell::new(Some(ui_rx)));
     app.connect_activate(move |app| {
+        info!(preview = args.preview, "activating overlay window");
         let Some(rx) = ui_rx.borrow_mut().take() else {
+            warn!("overlay activation ignored because the UI receiver was already consumed");
             return;
         };
         build_ui(
@@ -398,6 +401,12 @@ fn build_ui(
     });
 
     if !hide_when_idle {
+        info!(
+            layer_shell,
+            anchor = overlay_config.anchor,
+            mode = overlay_config.mode,
+            "presenting overlay window"
+        );
         window.present();
     }
 }
