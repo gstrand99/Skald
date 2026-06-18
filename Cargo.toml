@@ -4,6 +4,7 @@ members = [
     "crates/skaldd",
     "crates/skald-cli",
     "crates/skald-overlay",
+    "crates/skald-tray",
     "crates/skald-platform",
 ]
 resolver = "2"
