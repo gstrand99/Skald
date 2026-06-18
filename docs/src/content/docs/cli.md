@@ -29,6 +29,7 @@ Push-to-talk aliases: `skald ptt-start`, `skald ptt-stop`.
 | `skald watch` | Stream daemon events and preview text |
 | `skald waybar` | Stream privacy-safe Waybar JSON status updates |
 | `skald overlay` | Launch the graphical preview overlay |
+| `skald-tray` | Launch the optional StatusNotifier/AppIndicator client |
 
 ## Config and doctor
 

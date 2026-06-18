@@ -8,14 +8,14 @@ Manual checklist for the first Linux release. Run after `just check` and
 
 ## Sessions
 
-| Session | Doctor | Toggle record | Clipboard | Safe paste | Preview overlay | Waybar | Notes |
-|---------|--------|---------------|-----------|------------|-----------------|--------|-------|
-| Hyprland Wayland | yes | yes | yes | yes | yes | yes | Primary dev target; layer-shell overlay |
-| Sway Wayland | | | | | | | Layer-shell bar or watch |
-| GNOME Wayland | | | | | | | Clipboard-only paste; floating overlay |
-| KDE Wayland | | | | | | | Clipboard-only default |
-| X11 | | | | | | | xdotool paste when installed |
-| SSH / headless | | | | | | n/a | `skald watch` only; no overlay |
+| Session | Doctor | Toggle record | Clipboard | Safe paste | Preview overlay | Waybar | Tray | Notes |
+|---------|--------|---------------|-----------|------------|-----------------|--------|------|-------|
+| Hyprland Wayland | yes | yes | yes | yes | yes | yes | | Primary dev target; layer-shell overlay |
+| Sway Wayland | | | | | | | depends on bar | Requires a StatusNotifier host |
+| GNOME Wayland | | | | | | | extension required | Install an AppIndicator extension |
+| KDE Wayland | | | | | | | expected | Native StatusNotifier support |
+| X11 | | | | | | | desktop dependent | xdotool paste when installed |
+| SSH / headless | | | | | | n/a | n/a | `skald watch` only; no desktop clients |
 
 ## Privacy checks
 
