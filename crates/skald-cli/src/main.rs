@@ -58,7 +58,10 @@ enum Commands {
     Watch,
     /// Stream privacy-safe JSON updates for a Waybar custom module.
     Waybar,
-    Overlay,
+    Overlay {
+        #[command(subcommand)]
+        command: Option<OverlayCommands>,
+    },
     Transcribe {
         audio_file: std::path::PathBuf,
     },
@@ -153,6 +156,24 @@ enum SetupSubcommands {
     Record {
         #[arg(long, default_value_t = 10)]
         seconds: u64,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum OverlayCommands {
+    Preview {
+        #[arg(long)]
+        style: Option<String>,
+        #[arg(long)]
+        cycle: bool,
+        #[arg(long)]
+        microphone: bool,
+        #[arg(long)]
+        mode: Option<String>,
+        #[arg(long)]
+        anchor: Option<String>,
+        #[arg(long)]
+        save: bool,
     },
 }
 
@@ -361,7 +382,7 @@ async fn main() -> Result<()> {
         Commands::Cancel => print_response(&send(Command::Cancel).await?)?,
         Commands::Watch => watch().await?,
         Commands::Waybar => waybar().await?,
-        Commands::Overlay => run_overlay()?,
+        Commands::Overlay { command } => run_overlay(command)?,
         Commands::Transcribe { audio_file } => print_response(
             &send(Command::Transcribe {
                 audio_path: audio_file,
@@ -709,7 +730,7 @@ impl PreviewDisplay {
     }
 }
 
-fn run_overlay() -> Result<()> {
+fn run_overlay(command: Option<OverlayCommands>) -> Result<()> {
     let overlay = std::env::current_exe()
         .ok()
         .and_then(|path| {
@@ -718,9 +739,37 @@ fn run_overlay() -> Result<()> {
                 .filter(|candidate| candidate.is_file())
         })
         .unwrap_or_else(|| std::path::PathBuf::from("skald-overlay"));
-    let status = std::process::Command::new(overlay)
-        .status()
-        .context("failed to launch skald-overlay")?;
+    let mut process = std::process::Command::new(overlay);
+    if let Some(OverlayCommands::Preview {
+        style,
+        cycle,
+        microphone,
+        mode,
+        anchor,
+        save,
+    }) = command
+    {
+        process.arg("--preview");
+        if let Some(style) = style {
+            process.args(["--style", &style]);
+        }
+        if cycle {
+            process.arg("--cycle");
+        }
+        if microphone {
+            process.arg("--microphone");
+        }
+        if let Some(mode) = mode {
+            process.args(["--mode", &mode]);
+        }
+        if let Some(anchor) = anchor {
+            process.args(["--anchor", &anchor]);
+        }
+        if save {
+            process.arg("--save");
+        }
+    }
+    let status = process.status().context("failed to launch skald-overlay")?;
     if status.success() {
         Ok(())
     } else {
