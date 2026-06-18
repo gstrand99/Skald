@@ -51,6 +51,9 @@ pub fn protocol_version_from_event(event: &Event) -> u32 {
         }
         | Event::Preview {
             protocol_version, ..
+        }
+        | Event::AudioLevel {
+            protocol_version, ..
         } => *protocol_version,
     }
 }
@@ -69,6 +72,7 @@ pub fn overlay_event_kinds() -> Vec<EventKind> {
     vec![
         EventKind::State,
         EventKind::Preview,
+        EventKind::AudioLevel,
         EventKind::Result,
         EventKind::Error,
     ]
@@ -186,6 +190,15 @@ mod tests {
             speech_active: false,
         };
         assert_eq!(protocol_version_from_event(&preview), 8);
+
+        let audio_level = Event::AudioLevel {
+            protocol_version: 10,
+            timestamp_ms: 0,
+            job_id: JobId::new(),
+            rms: 0.1,
+            peak: 0.2,
+        };
+        assert_eq!(protocol_version_from_event(&audio_level), 10);
 
         let result = Event::Result {
             protocol_version: 9,

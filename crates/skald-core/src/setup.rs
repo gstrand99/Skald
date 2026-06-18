@@ -135,7 +135,11 @@ mod tests {
 
     #[test]
     fn needs_setup_when_no_config_file() {
-        let config = Config::default();
+        let mut config = Config::default();
+        config.paths.model_dir = std::env::temp_dir()
+            .join(format!("skald-setup-missing-{}", ulid::Ulid::new()))
+            .display()
+            .to_string();
         assert!(!is_setup_complete(&config.paths));
     }
 

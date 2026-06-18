@@ -567,6 +567,7 @@ async fn watch() -> Result<()> {
             } => {
                 preview_display.update(&stable, &provisional, speech_active);
             }
+            Event::AudioLevel { .. } => {}
             Event::State { ref job_state, .. } => match job_state {
                 JobState::Recording => {
                     recording = true;

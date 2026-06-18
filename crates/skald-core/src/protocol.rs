@@ -141,6 +141,7 @@ pub enum EventKind {
     Result,
     Error,
     Preview,
+    AudioLevel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -378,6 +379,13 @@ pub enum Event {
         stable: String,
         provisional: String,
         speech_active: bool,
+    },
+    AudioLevel {
+        protocol_version: u32,
+        timestamp_ms: u64,
+        job_id: JobId,
+        rms: f32,
+        peak: f32,
     },
 }
 

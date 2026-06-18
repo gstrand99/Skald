@@ -29,6 +29,14 @@ use skald_core::{
 };
 use thiserror::Error;
 use tokio::sync::oneshot;
+use tokio::sync::watch;
+
+#[derive(Debug, Clone)]
+pub struct AudioLevelSnapshot {
+    pub job_id: JobId,
+    pub rms: f32,
+    pub peak: f32,
+}
 
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -84,6 +92,7 @@ impl RecordingTap {
 pub struct AudioRecorder {
     commands: mpsc::Sender<OwnerCommand>,
     tap: Arc<Mutex<Option<RecordingTap>>>,
+    levels: watch::Sender<Option<AudioLevelSnapshot>>,
 }
 
 enum OwnerCommand {
@@ -112,22 +121,70 @@ struct ActiveRecording {
     truncated: Arc<AtomicBool>,
     stream_error: Arc<Mutex<Option<String>>>,
     stream: Stream,
+    level_state: Arc<CaptureLevelState>,
+}
+
+#[derive(Default)]
+struct CaptureLevelState {
+    job_id: Mutex<Option<JobId>>,
+    rms_bits: std::sync::atomic::AtomicU32,
+    peak_bits: std::sync::atomic::AtomicU32,
+    active: AtomicBool,
 }
 
 impl AudioRecorder {
     pub fn spawn(config: AudioConfig, paths: PathsConfig) -> Self {
         let (commands, receiver) = mpsc::channel();
         let tap = Arc::new(Mutex::new(None));
+        let (levels, _) = watch::channel(None);
+        let level_state = Arc::new(CaptureLevelState::default());
+        let level_state_for_publisher = Arc::clone(&level_state);
+        let levels_for_publisher = levels.clone();
+        thread::Builder::new()
+            .name("skald-audio-levels".into())
+            .spawn(move || {
+                loop {
+                    thread::sleep(Duration::from_millis(50));
+                    if !level_state_for_publisher.active.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let job_id = level_state_for_publisher
+                        .job_id
+                        .lock()
+                        .ok()
+                        .and_then(|job_id| job_id.clone());
+                    if let Some(job_id) = job_id {
+                        levels_for_publisher.send_replace(Some(AudioLevelSnapshot {
+                            job_id,
+                            rms: f32::from_bits(
+                                level_state_for_publisher.rms_bits.load(Ordering::Relaxed),
+                            ),
+                            peak: f32::from_bits(
+                                level_state_for_publisher.peak_bits.load(Ordering::Relaxed),
+                            ),
+                        }));
+                    }
+                }
+            })
+            .expect("audio level publisher thread should start");
         let tap_for_owner = tap.clone();
         thread::Builder::new()
             .name("skald-audio-owner".into())
-            .spawn(move || owner_loop(config, paths, receiver, tap_for_owner))
+            .spawn(move || owner_loop(config, paths, receiver, tap_for_owner, level_state))
             .expect("audio owner thread should start");
-        Self { commands, tap }
+        Self {
+            commands,
+            tap,
+            levels,
+        }
     }
 
     pub fn current_tap(&self) -> Option<RecordingTap> {
         self.tap.lock().ok()?.clone()
+    }
+
+    pub fn subscribe_levels(&self) -> watch::Receiver<Option<AudioLevelSnapshot>> {
+        self.levels.subscribe()
     }
 
     pub async fn start(
@@ -169,6 +226,7 @@ fn owner_loop(
     paths: PathsConfig,
     receiver: mpsc::Receiver<OwnerCommand>,
     tap_slot: Arc<Mutex<Option<RecordingTap>>>,
+    level_state: Arc<CaptureLevelState>,
 ) {
     let mut active: Option<ActiveRecording> = None;
     let mut stream_failure: Option<(JobId, String)> = None;
@@ -200,7 +258,13 @@ fn owner_loop(
                 let result = if active.is_some() {
                     Err(AudioError::AlreadyRecording)
                 } else {
-                    start_recording(job_id, &config, preview_ring_buffer_seconds).map(|recording| {
+                    start_recording(
+                        job_id,
+                        &config,
+                        preview_ring_buffer_seconds,
+                        Arc::clone(&level_state),
+                    )
+                    .map(|recording| {
                         if let Some(seconds) = preview_ring_buffer_seconds {
                             let preview_ring = recording
                                 .preview_ring
@@ -232,6 +296,7 @@ fn owner_loop(
                     Err(error)
                 } else {
                     take_matching(&mut active, &job_id).and_then(|recording| {
+                        clear_audio_levels(&recording.level_state);
                         if let Ok(mut slot) = tap_slot.lock() {
                             *slot = None;
                         }
@@ -248,6 +313,7 @@ fn owner_loop(
                 } else {
                     take_matching(&mut active, &job_id).map(drop)
                 };
+                clear_audio_levels(&level_state);
                 if let Ok(mut slot) = tap_slot.lock() {
                     *slot = None;
                 }
@@ -286,7 +352,9 @@ fn handle_active_stream_error(
         return;
     };
     let job_id = recording.job_id.clone();
+    let level_state = Arc::clone(&recording.level_state);
     active.take();
+    clear_audio_levels(&level_state);
     if let Ok(mut slot) = tap_slot.lock() {
         *slot = None;
     }
@@ -321,6 +389,7 @@ fn start_recording(
     job_id: JobId,
     config: &AudioConfig,
     preview_ring_buffer_seconds: Option<u64>,
+    level_state: Arc<CaptureLevelState>,
 ) -> Result<ActiveRecording, AudioError> {
     let host = cpal::default_host();
     let device = if config.device == "default" {
@@ -359,6 +428,7 @@ fn start_recording(
         truncated: &truncated,
         preview_ring: preview_ring.as_ref(),
         preview_ring_cap,
+        level_state: &level_state,
     };
     let stream = build_stream(
         &device,
@@ -370,6 +440,12 @@ fn start_recording(
     stream
         .play()
         .map_err(|error| AudioError::PlayStream(error.to_string()))?;
+    if let Ok(mut active_job_id) = level_state.job_id.lock() {
+        *active_job_id = Some(job_id.clone());
+    }
+    level_state.rms_bits.store(0, Ordering::Relaxed);
+    level_state.peak_bits.store(0, Ordering::Relaxed);
+    level_state.active.store(true, Ordering::Release);
     Ok(ActiveRecording {
         job_id,
         started_at: Instant::now(),
@@ -380,6 +456,7 @@ fn start_recording(
         truncated,
         stream_error,
         stream,
+        level_state,
     })
 }
 
@@ -389,9 +466,19 @@ struct CaptureContext<'a> {
     truncated: &'a Arc<AtomicBool>,
     preview_ring: Option<&'a Arc<Mutex<VecDeque<f32>>>>,
     preview_ring_cap: usize,
+    level_state: &'a Arc<CaptureLevelState>,
 }
 
 fn append_capture_samples(context: &CaptureContext<'_>, converted: &[f32]) {
+    let (rms, peak) = energy(converted);
+    context
+        .level_state
+        .rms_bits
+        .store(rms.to_bits(), Ordering::Relaxed);
+    context
+        .level_state
+        .peak_bits
+        .store(peak.to_bits(), Ordering::Relaxed);
     if let Ok(mut output) = context.samples.lock() {
         for &sample in converted {
             if output.len() < context.max_samples_cap {
@@ -435,6 +522,7 @@ fn build_stream(
             let truncated = context.truncated.clone();
             let preview_ring = context.preview_ring.cloned();
             let preview_ring_cap = context.preview_ring_cap;
+            let level_state = context.level_state.clone();
             device.build_input_stream(
                 config,
                 move |data: &[$sample], _| {
@@ -444,6 +532,7 @@ fn build_stream(
                         truncated: &truncated,
                         preview_ring: preview_ring.as_ref(),
                         preview_ring_cap,
+                        level_state: &level_state,
                     };
                     let converted: Vec<f32> = data.iter().copied().map($convert).collect();
                     append_capture_samples(&capture, &converted);
@@ -477,6 +566,15 @@ fn build_stream(
         }
     };
     result.map_err(|error| AudioError::BuildStream(error.to_string()))
+}
+
+fn clear_audio_levels(level_state: &CaptureLevelState) {
+    level_state.active.store(false, Ordering::Release);
+    level_state.rms_bits.store(0, Ordering::Relaxed);
+    level_state.peak_bits.store(0, Ordering::Relaxed);
+    if let Ok(mut job_id) = level_state.job_id.lock() {
+        *job_id = None;
+    }
 }
 
 fn finish_recording(
