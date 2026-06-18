@@ -22,6 +22,10 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
+use cpal::{
+    SampleFormat, Stream, StreamConfig,
+    traits::{DeviceTrait, HostTrait, StreamTrait},
+};
 use gtk::{
     Application, ApplicationWindow, Box as GtkBox, DrawingArea, Label, Orientation, glib,
     prelude::*,
@@ -38,9 +42,26 @@ use tracing::{info, warn};
 
 #[derive(Debug, Parser)]
 #[command(name = "skald-overlay", about = "Skald dictation preview overlay")]
+#[allow(clippy::struct_excessive_bools)]
 struct Args {
     #[arg(long)]
     socket: Option<PathBuf>,
+    /// Run with isolated synthetic or microphone input instead of daemon events.
+    #[arg(long)]
+    preview: bool,
+    #[arg(long, value_parser = ["waveform", "bars", "pulse", "dots"])]
+    style: Option<String>,
+    #[arg(long, requires = "preview")]
+    cycle: bool,
+    #[arg(long, requires = "preview")]
+    microphone: bool,
+    #[arg(long, value_parser = ["text", "visualizer"], requires = "preview")]
+    mode: Option<String>,
+    #[arg(long, value_parser = ["top", "bottom", "auto"], requires = "preview")]
+    anchor: Option<String>,
+    /// Persist selected mode, style, and anchor after validation.
+    #[arg(long, requires = "preview")]
+    save: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +69,8 @@ enum UiMessage {
     Connected,
     Disconnected,
     Event(Box<Event>),
+    PreviewLevel { rms: f32, peak: f32 },
+    PreviewError(String),
 }
 
 #[derive(Debug, Default)]
@@ -70,8 +93,21 @@ fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let config = Config::load_or_default()?;
+    let mut config = Config::load_validated()?;
+    if let Some(mode) = &args.mode {
+        config.overlay.mode.clone_from(mode);
+    }
+    if let Some(style) = &args.style {
+        config.overlay.visualizer_style.clone_from(style);
+    }
+    if let Some(anchor) = &args.anchor {
+        config.overlay.anchor.clone_from(anchor);
+    }
     config.validate()?;
+    if args.save {
+        let path = config.save()?;
+        eprintln!("Saved overlay settings to {}", path.display());
+    }
     let socket = args
         .socket
         .unwrap_or_else(|| client::socket_path_from_config().expect("socket path"));
@@ -85,7 +121,15 @@ fn main() -> Result<()> {
     );
 
     let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
-    spawn_event_worker(socket, ui_tx);
+    if args.preview {
+        if args.microphone {
+            spawn_microphone_worker(&config.audio.device, ui_tx)?;
+        } else {
+            spawn_synthetic_worker(ui_tx);
+        }
+    } else {
+        spawn_event_worker(socket, ui_tx);
+    }
 
     let app = Application::builder()
         .application_id("dev.skald.Overlay")
@@ -95,7 +139,15 @@ fn main() -> Result<()> {
         let Some(rx) = ui_rx.borrow_mut().take() else {
             return;
         };
-        build_ui(app, rx, overlay_config.clone(), hide_when_idle, hint);
+        build_ui(
+            app,
+            rx,
+            overlay_config.clone(),
+            if args.preview { false } else { hide_when_idle },
+            hint,
+            args.preview,
+            args.cycle,
+        );
     });
     app.run();
     Ok(())
@@ -153,6 +205,8 @@ fn build_ui(
     overlay_config: skald_core::config::OverlayConfig,
     hide_when_idle: bool,
     hint: skald_platform::OverlaySessionHint,
+    preview_mode: bool,
+    cycle: bool,
 ) {
     let window = ApplicationWindow::builder()
         .application(app)
@@ -185,14 +239,15 @@ fn build_ui(
         .build();
     let drawn_waveform = Rc::new(RefCell::new(VecDeque::new()));
     let drawn_waveform_for_draw = Rc::clone(&drawn_waveform);
-    let visualizer_style = overlay_config.visualizer_style.clone();
+    let drawn_style = Rc::new(RefCell::new(overlay_config.visualizer_style.clone()));
+    let drawn_style_for_draw = Rc::clone(&drawn_style);
     visualizer.set_draw_func(move |_, context, width, height| {
         draw_visualizer(
             context,
             width,
             height,
             &drawn_waveform_for_draw.borrow(),
-            &visualizer_style,
+            &drawn_style_for_draw.borrow(),
         );
     });
     preview.add_css_class("skald-overlay-preview");
@@ -224,13 +279,23 @@ fn build_ui(
     }
 
     let mut state = OverlayState {
-        status: if hint.id == "gnome_wayland" {
+        status: if preview_mode {
+            "Overlay preview".into()
+        } else if hint.id == "gnome_wayland" {
             "Skald (limited on GNOME Wayland)".into()
         } else {
             "Skald".into()
         },
         ..OverlayState::default()
     };
+    if preview_mode {
+        state.visible = true;
+        state.recording = true;
+        if overlay_config.mode == "text" {
+            state.stable = "Skald overlay preview".into();
+            state.provisional = "Fixed sample text".into();
+        }
+    }
     apply_state(
         &window,
         &status,
@@ -268,6 +333,8 @@ fn build_ui(
     let placement_polling_for_tick = Arc::clone(&placement_polling);
     let mut latest_placement: Option<OverlayPlacementHint> = None;
     let mut last_applied_placement: Option<OverlayPlacementHint> = None;
+    let started_at = std::time::Instant::now();
+    let styles = ["waveform", "bars", "pulse", "dots"];
     glib::timeout_add_local(Duration::from_millis(50), move || {
         while let Ok(message) = ui_rx.try_recv() {
             match message {
@@ -284,7 +351,22 @@ fn build_ui(
                     state.visible = !hide_when_idle;
                 }
                 UiMessage::Event(event) => apply_event(&mut state, *event, hide_when_idle),
+                UiMessage::PreviewLevel { rms, peak } => {
+                    state.waveform.push_back(normalized_audio_level(rms, peak));
+                    while state.waveform.len() > 96 {
+                        state.waveform.pop_front();
+                    }
+                    state.status = calibration_feedback(rms, peak).into();
+                }
+                UiMessage::PreviewError(error) => {
+                    state.status = format!("Microphone error: {error}");
+                }
             }
+        }
+        if cycle {
+            let index = (started_at.elapsed().as_secs() / 3) as usize % styles.len();
+            *drawn_style.borrow_mut() = styles[index].into();
+            state.status = format!("Overlay preview: {}", styles[index]);
         }
         placement_polling_for_tick.store(
             layer_shell && use_cursor_placement && state.recording && state.visible,
@@ -317,6 +399,124 @@ fn build_ui(
 
     if !hide_when_idle {
         window.present();
+    }
+}
+
+fn spawn_synthetic_worker(ui_tx: mpsc::Sender<UiMessage>) {
+    thread::spawn(move || {
+        let started = std::time::Instant::now();
+        loop {
+            let phase = started.elapsed().as_secs_f32() * 3.0;
+            let level = ((phase.sin() + 1.0) * 0.16 + 0.015).clamp(0.0, 1.0);
+            if ui_tx
+                .send(UiMessage::PreviewLevel {
+                    rms: level,
+                    peak: (level * 2.2).min(1.0),
+                })
+                .is_err()
+            {
+                return;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    });
+}
+
+fn spawn_microphone_worker(device_name: &str, ui_tx: mpsc::Sender<UiMessage>) -> Result<()> {
+    let host = cpal::default_host();
+    let device = if device_name == "default" {
+        host.default_input_device()
+    } else {
+        host.input_devices()?
+            .find(|device| device.name().is_ok_and(|name| name == device_name))
+    }
+    .ok_or_else(|| anyhow::anyhow!("no input device named {device_name}"))?;
+    let name = device.name().unwrap_or_else(|_| device_name.into());
+    let supported = device.default_input_config()?;
+    let format = supported.sample_format();
+    let config: StreamConfig = supported.into();
+    eprintln!("Microphone: {name}");
+    thread::spawn(move || {
+        let active = Arc::new(AtomicBool::new(true));
+        let result: Result<()> = (|| {
+            let stream =
+                build_level_stream(&device, &config, format, ui_tx.clone(), Arc::clone(&active))?;
+            stream.play()?;
+            while active.load(Ordering::Relaxed) {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            let _ = ui_tx.send(UiMessage::PreviewError(error.to_string()));
+        }
+    });
+    Ok(())
+}
+
+fn build_level_stream(
+    device: &cpal::Device,
+    config: &StreamConfig,
+    format: SampleFormat,
+    ui_tx: mpsc::Sender<UiMessage>,
+    active: Arc<AtomicBool>,
+) -> Result<Stream, cpal::BuildStreamError> {
+    macro_rules! stream {
+        ($sample:ty, $convert:expr) => {{
+            let tx = ui_tx.clone();
+            let stream_active = Arc::clone(&active);
+            device.build_input_stream(
+                config,
+                move |data: &[$sample], _| {
+                    let mut sum = 0.0_f32;
+                    let mut peak = 0.0_f32;
+                    for sample in data.iter().copied().map($convert) {
+                        sum += sample * sample;
+                        peak = peak.max(sample.abs());
+                    }
+                    let rms = if data.is_empty() {
+                        0.0
+                    } else {
+                        (sum / data.len() as f32).sqrt()
+                    };
+                    if tx.send(UiMessage::PreviewLevel { rms, peak }).is_err() {
+                        stream_active.store(false, Ordering::Relaxed);
+                    }
+                },
+                move |error| {
+                    let _ = ui_tx.send(UiMessage::PreviewError(error.to_string()));
+                    active.store(false, Ordering::Relaxed);
+                },
+                None,
+            )
+        }};
+    }
+    match format {
+        SampleFormat::F32 => stream!(f32, |v: f32| v),
+        SampleFormat::F64 => stream!(f64, |v: f64| v as f32),
+        SampleFormat::I8 => stream!(i8, |v: i8| f32::from(v) / f32::from(i8::MAX)),
+        SampleFormat::I16 => stream!(i16, |v: i16| f32::from(v) / f32::from(i16::MAX)),
+        SampleFormat::I32 => stream!(i32, |v: i32| v as f32 / i32::MAX as f32),
+        SampleFormat::I64 => stream!(i64, |v: i64| v as f32 / i64::MAX as f32),
+        SampleFormat::U8 => stream!(u8, |v: u8| f32::from(v) / f32::from(u8::MAX) * 2.0 - 1.0),
+        SampleFormat::U16 => stream!(u16, |v: u16| f32::from(v) / f32::from(u16::MAX) * 2.0 - 1.0),
+        SampleFormat::U32 => stream!(u32, |v: u32| v as f32 / u32::MAX as f32 * 2.0 - 1.0),
+        SampleFormat::U64 => stream!(u64, |v: u64| v as f32 / u64::MAX as f32 * 2.0 - 1.0),
+        _ => unreachable!("unsupported sample format"),
+    }
+}
+
+fn calibration_feedback(rms: f32, peak: f32) -> &'static str {
+    if peak >= 0.98 {
+        "Clipping: lower microphone gain"
+    } else if rms < 0.002 {
+        "No input detected"
+    } else if rms < 0.015 {
+        "Quiet input / background noise"
+    } else if rms < 0.35 {
+        "Normal speech response"
+    } else {
+        "Input consistently loud"
     }
 }
 
@@ -668,7 +868,9 @@ fn format_preview_markup(stable: &str, provisional: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalized_audio_level;
+    use clap::Parser;
+
+    use super::{Args, calibration_feedback, normalized_audio_level};
 
     #[test]
     fn audio_level_mapping_is_bounded_and_monotonic() {
@@ -687,5 +889,37 @@ mod tests {
     fn audio_level_mapping_clamps_invalid_ranges() {
         assert!(normalized_audio_level(-1.0, -1.0).abs() < f64::EPSILON);
         assert!((normalized_audio_level(2.0, 2.0) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn calibration_feedback_reports_actionable_ranges() {
+        assert_eq!(calibration_feedback(0.0, 0.0), "No input detected");
+        assert_eq!(calibration_feedback(0.02, 0.2), "Normal speech response");
+        assert_eq!(calibration_feedback(0.4, 0.7), "Input consistently loud");
+        assert_eq!(
+            calibration_feedback(0.2, 0.99),
+            "Clipping: lower microphone gain"
+        );
+    }
+
+    #[test]
+    fn preview_arguments_validate_modes_and_styles() {
+        assert!(
+            Args::try_parse_from([
+                "skald-overlay",
+                "--preview",
+                "--mode",
+                "visualizer",
+                "--style",
+                "dots",
+                "--anchor",
+                "bottom",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Args::try_parse_from(["skald-overlay", "--preview", "--style", "spectrum"]).is_err()
+        );
+        assert!(Args::try_parse_from(["skald-overlay", "--microphone"]).is_err());
     }
 }
