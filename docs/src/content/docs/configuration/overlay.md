@@ -4,10 +4,12 @@ description: Graphical preview overlay window settings.
 ---
 
 Configures `skald-overlay`, a separate process that subscribes to preview events.
-Requires `[preview].enabled = true`.
+Text mode requires `[preview].enabled = true`; visualizer mode automatically disables preview ASR.
 
 ```toml
 [overlay]
+mode = "text"
+visualizer_style = "waveform"
 margin_px = 16
 max_width_px = 720
 anchor = "auto"
@@ -19,6 +21,8 @@ hide_when_idle = true
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `mode` | string | `"text"` | **`text`** shows stable/provisional transcription. **`visualizer`** shows microphone level bars without displaying transcript text or requiring preview ASR. |
+| `visualizer_style` | string | `"waveform"` | Visualizer appearance: **`waveform`**, **`bars`**, **`pulse`**, or **`dots`**. Ignored in text mode. |
 | `margin_px` | integer | `16` | Margin from screen edges or cursor anchor in pixels. |
 | `max_width_px` | integer | `720` | Maximum overlay width in pixels. |
 | `anchor` | string | `"auto"` | **`top`**: full-width bar at top. **`bottom`**: full-width bar at bottom. **`auto`**: place near cursor on Hyprland/X11 when supported; otherwise fall back to floating window behavior. |
@@ -41,6 +45,31 @@ skald overlay
 ```
 
 Closing the overlay window does not stop recording. The overlay reconnects after daemon restarts.
+
+## Visualizer mode
+
+Set `mode = "visualizer"` for recording feedback without scrolling text. The daemon sends
+rate-limited normalized RMS and peak levels to the overlay; raw audio is never sent over IPC.
+Visualizer mode works with `[preview].enabled = false`, so it does not load the preview model.
+When visualizer mode is selected, preview ASR stays disabled even if `preview.enabled = true`.
+This avoids loading or running the text preview model, and also means `skald watch` does not
+receive realtime preview text. Final transcription is unaffected.
+
+Available styles:
+
+| Style | Appearance |
+|-------|------------|
+| `waveform` | Scrolling mirrored waveform history |
+| `bars` | Seven vertical level bars |
+| `pulse` | A centered circle that expands with input level |
+| `dots` | Scrolling mirrored dots |
+
+To validate it manually:
+
+1. Set `overlay.mode = "visualizer"` and choose `overlay.visualizer_style`.
+2. Restart `skaldd`, then run `just overlay`.
+3. Start a recording and confirm the bars react to normal speech, settle after speech stops,
+   and disappear or return to idle when recording ends.
 
 ## Notes
 
