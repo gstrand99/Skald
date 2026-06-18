@@ -39,6 +39,10 @@ status: build
 watch: build
     target/debug/skald watch
 
+# Stream privacy-safe JSON updates for a Waybar custom module.
+waybar: build
+    target/debug/skald waybar
+
 # Launch the preview overlay (requires preview.enabled and a graphical session).
 overlay: build
     target/debug/skald-overlay
