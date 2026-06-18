@@ -6,6 +6,9 @@ description: Realtime transcription while recording.
 Optional streaming ASR on a **separate small model** while you record. Preview text
 is shown in `skald watch` or the overlay; it is **never** copied or pasted.
 
+Preview ASR runs only when `preview.enabled = true` and `overlay.mode = "text"`.
+Selecting visualizer mode disables the preview worker to avoid unused model and inference costs.
+
 ```toml
 [preview]
 enabled = false

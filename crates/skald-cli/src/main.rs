@@ -567,6 +567,7 @@ async fn watch() -> Result<()> {
             } => {
                 preview_display.update(&stable, &provisional, speech_active);
             }
+            Event::AudioLevel { .. } => {}
             Event::State { ref job_state, .. } => match job_state {
                 JobState::Recording => {
                     recording = true;
@@ -717,7 +718,7 @@ fn print_cleanup_response(response: &Response) -> Result<()> {
 }
 
 fn preview_doctor_report(config: &Config) -> Option<PreviewReport> {
-    config.preview.enabled.then(|| {
+    config.preview_enabled_effective().then(|| {
         let preview_model_path = paths::expand_home(&config.preview.effective_model_path());
         PreviewReport {
             model_path: preview_model_path.display().to_string(),

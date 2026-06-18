@@ -64,9 +64,11 @@ async fn main() -> Result<()> {
         (AutoPasteMode::Safe, true) => "safe",
         (AutoPasteMode::Always, true) => "always",
     };
-    let preview_enabled = config.preview.enabled;
+    let preview_enabled = config.preview_enabled_effective();
     let preview_asr = preview_enabled
         .then(|| preview_asr::PreviewAsrManager::spawn(&config.preview, &config.asr));
+    let mut preview_config = config.preview.clone();
+    preview_config.enabled = preview_enabled;
     let state = Arc::new(AppState {
         status: RwLock::new(DaemonStatus {
             cleanup_enabled: config.cleanup.enabled,
@@ -76,7 +78,7 @@ async fn main() -> Result<()> {
             ..DaemonStatus::default()
         }),
         events,
-        preview: preview::PreviewCoordinator::new(config.preview.clone()),
+        preview: preview::PreviewCoordinator::new(preview_config),
         preview_asr,
         audio: audio::AudioRecorder::spawn(config.audio, config.paths.clone()),
         asr: asr::AsrManager::spawn(config.asr, config.vocabulary),
