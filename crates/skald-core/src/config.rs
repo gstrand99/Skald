@@ -504,6 +504,11 @@ impl Default for Config {
 }
 
 impl Config {
+    #[must_use]
+    pub fn preview_enabled_effective(&self) -> bool {
+        self.preview.enabled && self.overlay.mode == "text"
+    }
+
     /// Returns the fixed path to `config.toml`.
     ///
     /// This always resolves to `dirs::config_dir()/skald/config.toml` and does
@@ -844,7 +849,7 @@ fn collect_overlay_and_preview_errors(config: &Config, errors: &mut Vec<ConfigEr
     if !matches!(config.overlay.anchor.as_str(), "top" | "bottom" | "auto") {
         push_validation(errors, "overlay.anchor must be top, bottom, or auto".into());
     }
-    if !config.preview.enabled {
+    if !config.preview_enabled_effective() {
         return;
     }
     if config.preview.chunk_ms == 0 || config.preview.step_ms == 0 {
@@ -1012,6 +1017,14 @@ mod tests {
         config.overlay.mode = "visualizer".into();
         config.preview.enabled = false;
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn visualizer_mode_disables_preview_effectively() {
+        let mut config = Config::default();
+        config.preview.enabled = true;
+        config.overlay.mode = "visualizer".into();
+        assert!(!config.preview_enabled_effective());
     }
 
     #[test]
