@@ -11,7 +11,8 @@ mod styles_cmd;
 use std::{io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
+use clap_complete::Shell;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 use skald_core::{
@@ -66,8 +67,13 @@ enum Commands {
         command: AsrCommands,
     },
     Models {
+        #[arg(long, global = true)]
+        json: bool,
         #[command(subcommand)]
         command: models_cmd::ModelsCommands,
+    },
+    Completions {
+        shell: Shell,
     },
     Bench {
         #[command(subcommand)]
@@ -283,6 +289,7 @@ struct DoctorReport {
     auto_paste_always: bool,
     audio: AudioReport,
     suggestions: Vec<String>,
+    remediation_commands: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -404,7 +411,10 @@ async fn main() -> Result<()> {
             }
         },
         Commands::Config { command } => config(&command)?,
-        Commands::Models { command } => models_cmd::run(&command).await?,
+        Commands::Models { command, json } => models_cmd::run(&command, json).await?,
+        Commands::Completions { shell } => {
+            clap_complete::generate(shell, &mut Cli::command(), "skald", &mut std::io::stdout());
+        }
         Commands::Service { command } => service_command(&command)?,
         Commands::Secrets { command } => secrets_cmd::run(command)?,
         Commands::Cleanup { command } => match command {
@@ -856,6 +866,7 @@ async fn doctor(json: bool) -> Result<()> {
     let config = Config::load_or_default()?;
     let mut report = build_doctor_report(&config).await?;
     report.suggestions = build_doctor_suggestions(&report);
+    report.remediation_commands = build_doctor_remediation(&report);
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
         if doctor_has_failures(&report) {
@@ -988,6 +999,7 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
         auto_paste_always: config.injection.auto_paste == AutoPasteMode::Always,
         audio,
         suggestions: Vec::new(),
+        remediation_commands: Vec::new(),
     })
 }
 
@@ -1255,6 +1267,12 @@ fn print_doctor(report: &DoctorReport) {
             println!("  - {suggestion}");
         }
     }
+    if !report.remediation_commands.is_empty() {
+        println!("Recommended remediation:");
+        for command in &report.remediation_commands {
+            println!("  {command}");
+        }
+    }
 }
 
 fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
@@ -1330,6 +1348,29 @@ fn build_doctor_suggestions(report: &DoctorReport) -> Vec<String> {
         );
     }
     suggestions
+}
+
+fn build_doctor_remediation(report: &DoctorReport) -> Vec<String> {
+    let mut commands = Vec::new();
+    if !report.asr.model_exists {
+        commands.push("skald models recommend".into());
+        commands.push("skald models install small.en --select".into());
+    } else if let Some(id) = &report.asr.catalog_id
+        && report.asr.integrity != "verified"
+    {
+        commands.push(format!("skald models verify {id}"));
+    }
+    if report
+        .preview
+        .as_ref()
+        .is_some_and(|preview| !preview.model_exists)
+    {
+        commands.push("skald models install small.en --select-preview".into());
+    }
+    if !report.daemon_reachable {
+        commands.push("skald service start".into());
+    }
+    commands
 }
 
 async fn handle_bench(command: BenchCommands) -> Result<()> {
