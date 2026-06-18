@@ -185,8 +185,15 @@ fn build_ui(
         .build();
     let drawn_waveform = Rc::new(RefCell::new(VecDeque::new()));
     let drawn_waveform_for_draw = Rc::clone(&drawn_waveform);
+    let visualizer_style = overlay_config.visualizer_style.clone();
     visualizer.set_draw_func(move |_, context, width, height| {
-        draw_visualizer(context, width, height, &drawn_waveform_for_draw.borrow());
+        draw_visualizer(
+            context,
+            width,
+            height,
+            &drawn_waveform_for_draw.borrow(),
+            &visualizer_style,
+        );
     });
     preview.add_css_class("skald-overlay-preview");
     root.append(&status);
@@ -469,7 +476,17 @@ fn draw_visualizer(
     width: i32,
     height: i32,
     waveform: &VecDeque<f64>,
+    style: &str,
 ) {
+    match style {
+        "bars" => draw_bars(context, width, height, waveform),
+        "pulse" => draw_pulse(context, width, height, waveform),
+        "dots" => draw_dots(context, width, height, waveform),
+        _ => draw_waveform(context, width, height, waveform),
+    }
+}
+
+fn draw_waveform(context: &gtk::cairo::Context, width: i32, height: i32, waveform: &VecDeque<f64>) {
     let width = f64::from(width);
     let height = f64::from(height);
     let center = height / 2.0;
@@ -488,6 +505,67 @@ fn draw_visualizer(
         context.line_to(x, center + half_height);
     }
     let _ = context.stroke();
+}
+
+fn draw_bars(context: &gtk::cairo::Context, width: i32, height: i32, waveform: &VecDeque<f64>) {
+    const BARS: usize = 7;
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let gap = 6.0;
+    let bar_width = ((width - gap * (BARS - 1) as f64) / BARS as f64).max(3.0);
+    let recent: Vec<f64> = waveform.iter().rev().take(BARS).copied().collect();
+    context.set_source_rgb(0.96, 0.96, 0.96);
+    for index in 0..BARS {
+        let level = recent.get(BARS - 1 - index).copied().unwrap_or(0.0);
+        let bar_height = (4.0 + level * (height - 8.0)).clamp(4.0, height - 4.0);
+        let x = index as f64 * (bar_width + gap);
+        context.rectangle(x, height - bar_height, bar_width, bar_height);
+        let _ = context.fill();
+    }
+}
+
+fn draw_pulse(context: &gtk::cairo::Context, width: i32, height: i32, waveform: &VecDeque<f64>) {
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let level = waveform.back().copied().unwrap_or(0.0);
+    let radius = (6.0 + level * (height * 0.42)).min(height * 0.46);
+    context.set_source_rgba(0.96, 0.96, 0.96, 0.18 + level * 0.28);
+    context.arc(
+        width / 2.0,
+        height / 2.0,
+        radius * 1.35,
+        0.0,
+        std::f64::consts::TAU,
+    );
+    let _ = context.fill();
+    context.set_source_rgb(0.96, 0.96, 0.96);
+    context.arc(
+        width / 2.0,
+        height / 2.0,
+        radius,
+        0.0,
+        std::f64::consts::TAU,
+    );
+    let _ = context.fill();
+}
+
+fn draw_dots(context: &gtk::cairo::Context, width: i32, height: i32, waveform: &VecDeque<f64>) {
+    let width = f64::from(width);
+    let height = f64::from(height);
+    let center = height / 2.0;
+    let spacing = 8.0;
+    let visible_dots = ((width / spacing).floor() as usize).max(1);
+    let skip = waveform.len().saturating_sub(visible_dots);
+    let left_padding = (width - spacing * visible_dots as f64).max(0.0) / 2.0;
+    context.set_source_rgb(0.96, 0.96, 0.96);
+    for (index, level) in waveform.iter().skip(skip).enumerate() {
+        let x = left_padding + spacing * (index as f64 + 0.5);
+        let offset = level * (center - 5.0);
+        let radius = 1.5 + level * 1.5;
+        context.arc(x, center - offset, radius, 0.0, std::f64::consts::TAU);
+        context.arc(x, center + offset, radius, 0.0, std::f64::consts::TAU);
+        let _ = context.fill();
+    }
 }
 
 fn apply_screen_edge_layer_placement(

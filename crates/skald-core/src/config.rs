@@ -145,6 +145,8 @@ impl PreviewConfig {
 pub struct OverlayConfig {
     /// text | visualizer
     pub mode: String,
+    /// waveform | bars | pulse | dots
+    pub visualizer_style: String,
     pub margin_px: u32,
     pub max_width_px: u32,
     /// top | bottom | auto (cursor-aware on supported compositors)
@@ -157,6 +159,7 @@ impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
             mode: "text".into(),
+            visualizer_style: "waveform".into(),
             margin_px: 16,
             max_width_px: 720,
             anchor: "auto".into(),
@@ -829,6 +832,15 @@ fn collect_overlay_and_preview_errors(config: &Config, errors: &mut Vec<ConfigEr
     if !matches!(config.overlay.mode.as_str(), "text" | "visualizer") {
         push_validation(errors, "overlay.mode must be text or visualizer".into());
     }
+    if !matches!(
+        config.overlay.visualizer_style.as_str(),
+        "waveform" | "bars" | "pulse" | "dots"
+    ) {
+        push_validation(
+            errors,
+            "overlay.visualizer_style must be waveform, bars, pulse, or dots".into(),
+        );
+    }
     if !matches!(config.overlay.anchor.as_str(), "top" | "bottom" | "auto") {
         push_validation(errors, "overlay.anchor must be top, bottom, or auto".into());
     }
@@ -1011,6 +1023,27 @@ mod tests {
             error
                 .to_string()
                 .contains("overlay.mode must be text or visualizer")
+        }));
+    }
+
+    #[test]
+    fn accepts_each_visualizer_style() {
+        for style in ["waveform", "bars", "pulse", "dots"] {
+            let mut config = Config::default();
+            config.overlay.visualizer_style = style.into();
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_visualizer_style() {
+        let mut config = Config::default();
+        config.overlay.visualizer_style = "spectrum".into();
+        let errors = config.validate_all();
+        assert!(errors.iter().any(|error| {
+            error
+                .to_string()
+                .contains("overlay.visualizer_style must be waveform, bars, pulse, or dots")
         }));
     }
 
