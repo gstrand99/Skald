@@ -47,6 +47,10 @@ waybar: build
 overlay: build
     target/debug/skald-overlay
 
+# Preview overlay styles without starting a dictation job.
+overlay-preview *flags="": build
+    target/debug/skald overlay preview {{flags}}
+
 # Launch the optional StatusNotifier/AppIndicator tray client.
 tray: build
     target/debug/skald-tray

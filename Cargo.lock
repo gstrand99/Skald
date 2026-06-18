@@ -2900,6 +2900,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cpal",
  "gtk4",
  "gtk4-layer-shell",
  "skald-core",
