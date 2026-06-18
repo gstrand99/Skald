@@ -79,9 +79,19 @@ phrases = [
 
 ## Model selection
 
-- Use [Setup wizard](/setup/) to benchmark candidates, or `skald config profile` presets.
-- `cpu-safe` sets `ggml-small.en.bin`, `gpu = false`, and `on_demand` lifecycle.
+- Use [Setup wizard](/setup/) to benchmark candidates, or manage them directly
+  with `skald models`.
+- CPU-safe recommendation: `small.en` with `gpu = false` and `on_demand`.
+- NVIDIA recommendation: `large-v3-turbo-q5` for final transcription and
+  `small.en-q5` for text preview, after validating CUDA performance and VRAM
+  use on the target system.
+- Visualizer-only overlay mode does not require a preview model.
 - After changing `model_path` or `gpu`, restart the daemon or run `skald asr restart`.
+
+Catalog downloads are source-controlled metadata, not remote configuration.
+Files are streamed to the model filesystem, verified by exact size and SHA-256,
+then renamed into place. Paths outside the catalog remain supported but are
+reported as unverified and are never deleted by managed cleanup.
 
 ## Notes
 

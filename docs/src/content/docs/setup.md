@@ -29,8 +29,9 @@ SKALD_SKIP_SETUP=1 just install
    prints distro-specific install commands when something is missing.
 3. **Recording** — saves `~/.local/share/skald/models/samples/setup.wav` (10 seconds by
    default). This file stays on disk for repeatable benchmarks.
-4. **Models** — offers to download candidate GGML models from Hugging Face
-   (`ggerganov/whisper.cpp`). Candidates depend on your hardware profile.
+4. **Models** — uses the same versioned catalog and verified download path as
+   `skald models install`. Downloads require HTTPS and are checked for exact
+   size and SHA-256 before atomic placement.
 5. **Benchmarks** — transcribes the fixture with each downloaded model and shows
    cold-load and transcribe timings plus transcript previews.
 6. **Selection** — you pick the ASR model, optional preview overlay, cleanup, and
@@ -57,4 +58,21 @@ skald setup record --seconds 10
 
 ## Manual path
 
-Advanced users can follow [Install](/install/) without the wizard.
+Advanced users can follow [Install](/install/) and use:
+
+```bash
+skald models list
+skald models install small.en
+skald models select small.en
+```
+
+For a noninteractive profile:
+
+```bash
+just setup-cpu
+just setup-nvidia  # requires NVIDIA drivers and a CUDA-enabled build
+```
+
+Validate the resulting installation with `just validate-models-cpu` or
+`just validate-models-nvidia`. NVIDIA validation requires working local NVIDIA
+drivers and cannot be inferred from model-file verification alone.

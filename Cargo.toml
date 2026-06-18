@@ -18,6 +18,7 @@ repository = "https://github.com/gstrand/skald"
 [workspace.dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 cpal = "0.16"
 dirs = "6"
 hound = "3"

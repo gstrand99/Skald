@@ -133,6 +133,59 @@ asr-load: build
 asr-status: build
     target/debug/skald asr status
 
+# List managed ASR model candidates and installed state.
+models-list: build
+    target/debug/skald models list
+
+# Verify installed catalog models without loading them.
+models-verify: build
+    target/debug/skald models verify
+
+# Install a catalog model by stable ID.
+models-install model: build
+    target/debug/skald models install {{model}}
+
+# Select a catalog model for final ASR.
+models-select model: build
+    target/debug/skald models select {{model}}
+
+# Select a catalog model for text preview.
+models-select-preview model: build
+    target/debug/skald models select-preview {{model}}
+
+# Review unused managed models for removal.
+models-prune: build
+    target/debug/skald models prune
+
+# Manual managed-model validation without downloading model weights.
+models-check: build
+    target/debug/skald models list
+    target/debug/skald models verify || true
+
+# Noninteractive CPU-safe onboarding.
+setup-cpu: build
+    target/debug/skald models install small.en --select
+
+# NVIDIA onboarding; requires a CUDA-enabled daemon build.
+setup-nvidia: build-cuda
+    target/debug/skald models install large-v3-turbo-q5 --select
+    target/debug/skald models install small.en-q5 --select-preview
+
+# Validate the CPU-safe managed-model path after setup.
+validate-models-cpu: build
+    target/debug/skald models verify small.en
+    target/debug/skald doctor
+
+# Validate NVIDIA model files and daemon build state after setup.
+validate-models-nvidia: build-cuda
+    target/debug/skald models verify large-v3-turbo-q5
+    target/debug/skald models verify small.en-q5
+    target/debug/skald doctor
+
+# Generate shell completion output.
+completions shell:
+    cargo run -p skald-cli -- completions {{shell}}
+
 # Benchmark transcription for a WAV file.
 bench-asr wav: build
     target/debug/skald bench asr {{wav}}
