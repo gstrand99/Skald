@@ -311,8 +311,10 @@ docs-dev:
 docs-build:
     cd docs && bun run build
 
-# Validate docs build.
-docs-check: docs-build
+# Validate docs typecheck and build.
+docs-check:
+    cd docs && bun run check
+    cd docs && bun run build
 
 # Build and deploy docs to Cloudflare Workers (tryskald.dev).
 docs-deploy:
@@ -321,5 +323,5 @@ docs-deploy:
 # Run formatting, linting, and tests.
 check: docs-check
     cargo fmt --check
-    cargo clippy --workspace --all-targets -- -D warnings
-    cargo test --workspace
+    cargo clippy --workspace --all-targets --locked -- -D warnings
+    cargo test --workspace --locked
