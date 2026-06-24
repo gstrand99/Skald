@@ -3,6 +3,7 @@ mod audio;
 mod bench;
 mod cleanup;
 mod delivery;
+mod diagnostics;
 mod dictation;
 mod injection;
 mod ipc;
@@ -100,6 +101,10 @@ async fn main() -> Result<()> {
         injection: config.injection,
         notifications: config.notifications,
         privacy: config.privacy,
+        diagnostics: Mutex::new(skald_core::diagnostics::DiagnosticsStore::new(
+            config.diagnostics.enabled,
+            config.diagnostics.max_records,
+        )),
         target_at_start: Mutex::new(None),
         cleanup_override: Mutex::new(None),
         style_override: Mutex::new(None),

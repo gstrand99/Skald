@@ -12,7 +12,7 @@ use tokio::{
 use tracing::{debug, warn};
 
 use crate::{
-    bench::{bench_dictation, bench_model_compare, setup_record},
+    bench::{bench_dictation, bench_model_compare, diagnostics_benchmark, setup_record},
     delivery::{test_clipboard, test_paste},
     dictation::{
         asr_load, asr_restart, asr_unload, cancel, cleanup_preview, insert_snippet, start, stop,
@@ -61,6 +61,7 @@ pub(crate) async fn handle_client(stream: UnixStream, state: Arc<AppState>) -> R
                     cleanup_ms: None,
                     dictation: None,
                     model_bench_results: None,
+                    diagnostics: None,
                 };
                 write_json_line(&mut writer, &response).await?;
                 continue;
@@ -149,6 +150,13 @@ pub(crate) async fn dispatch(request: Request, state: Arc<AppState>) -> Response
             )
             .await
         }
+        Command::DiagnosticsPerformance => {
+            crate::diagnostics::performance(request.request_id, &state).await
+        }
+        Command::DiagnosticsBenchmark { audio_path } => {
+            diagnostics_benchmark(request.request_id, &state, audio_path).await
+        }
+        Command::DiagnosticsClear => crate::diagnostics::clear(request.request_id, &state).await,
         Command::AsrLoad => asr_load(request.request_id, &state).await,
         Command::AsrUnload => asr_unload(request.request_id, &state).await,
         Command::AsrRestart => asr_restart(request.request_id, &state).await,

@@ -15,6 +15,10 @@ pub(crate) struct DeliveredText {
     pub(crate) copied_to_clipboard: bool,
     pub(crate) paste_outcome: injection::PasteOutcome,
     pub(crate) clipboard_restored: bool,
+    pub(crate) clipboard_ms: Option<u64>,
+    pub(crate) paste_attempt_ms: Option<u64>,
+    pub(crate) stop_to_clipboard_ms: Option<u64>,
+    pub(crate) stop_to_insert_ms: Option<u64>,
 }
 
 pub(crate) async fn capture_active_target_async() -> Option<skald_platform::TargetContext> {
@@ -55,7 +59,11 @@ pub(crate) async fn deliver_text_to_target(
     } else {
         None
     };
+    let clipboard_started = Instant::now();
     let copied_to_clipboard = copy_final_text(state, job_id, text).await?;
+    let clipboard_ms = copied_to_clipboard.then(|| elapsed_ms(clipboard_started));
+    let stop_to_clipboard_ms = copied_to_clipboard.then(|| elapsed_ms(started));
+    let paste_started = Instant::now();
     let paste_outcome = if copied_to_clipboard {
         insert_if_safe(
             state,
@@ -68,6 +76,10 @@ pub(crate) async fn deliver_text_to_target(
     } else {
         injection::PasteOutcome::disabled("clipboard output is disabled")
     };
+    let paste_attempt_ms = paste_outcome
+        .paste_attempted
+        .then(|| elapsed_ms(paste_started));
+    let stop_to_insert_ms = paste_outcome.paste_succeeded.then(|| elapsed_ms(started));
     let clipboard_restored = if injection::should_restore_clipboard(
         state.injection.restore_clipboard,
         paste_outcome.paste_succeeded,
@@ -93,6 +105,10 @@ pub(crate) async fn deliver_text_to_target(
         copied_to_clipboard,
         paste_outcome,
         clipboard_restored,
+        clipboard_ms,
+        paste_attempt_ms,
+        stop_to_clipboard_ms,
+        stop_to_insert_ms,
     })
 }
 
