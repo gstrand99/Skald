@@ -1,5 +1,9 @@
 /target/
 /dist/
+AGENTS.md
+Skald_implementation_plan.md
+findings.md
+findings_prompt.md
 *.swp
 *.swo
 .DS_Store
