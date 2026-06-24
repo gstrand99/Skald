@@ -28,9 +28,9 @@ skald doctor               # session, paths, daemon, and privacy checks
 ```text
 ~/.config/skald/
   config.toml
-  styles/      # cleanup styles (M8a)
-  apps/        # per-application profiles (M8b)
-  snippets/    # insert snippets (M8c)
+  styles/      # cleanup styles
+  apps/        # per-application profiles
+  snippets/    # insert snippets
 ~/.local/share/skald/models/
 $XDG_RUNTIME_DIR/skald/    # WAV files, Unix socket (when runtime_dir = "auto")
 ```
@@ -206,7 +206,8 @@ See [Cleanup (opt-in)](#cleanup-opt-in) below.
 
 User documentation is published at [tryskald.dev](https://tryskald.dev) (source in
 [`docs/`](docs/)): install, setup wizard, configuration, CLI reference,
-troubleshooting, and the Linux desktop matrix.
+troubleshooting, and the Linux desktop matrix. Linux 1.0 validates **Hyprland
+Wayland**; other sessions are documented as best-effort.
 
 Planned release work is tracked in [ROADMAP.md](ROADMAP.md).
 
@@ -287,8 +288,7 @@ GNOME Wayland, KDE Wayland, unknown Wayland sessions, and terminals outside
 Omarchy/Hyprland default to clipboard-only behavior. Application profiles will
 add more target-specific paste commands later.
 
-The product and architecture specification is in
-[`Skald_implementation_plan.md`](Skald_implementation_plan.md).
+The product and user documentation is at [tryskald.dev](https://tryskald.dev).
 
 ## Cleanup (opt-in)
 

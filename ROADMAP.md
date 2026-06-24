@@ -6,8 +6,8 @@ paths.
 
 ## Linux 1.0 readiness
 
-- [Clean up public repository metadata](https://github.com/gstrand99/Skald/issues/58)
-- Complete release-candidate validation across supported Linux desktop sessions.
+- [Clean up public repository metadata](https://github.com/gstrand99/Skald/issues/58) — done in #59
+- Hyprland Wayland is the validated desktop target for 1.0; other sessions are best-effort.
 - Publish measured CPU and CUDA benchmark results.
 - Verify clean install, upgrade, rollback, signing, and release archive smoke tests.
 
@@ -21,5 +21,5 @@ paths.
 
 ## Later ports
 
-- [Port VoxLine to macOS](https://github.com/gstrand99/Skald/issues/18)
-- [Port VoxLine to Windows](https://github.com/gstrand99/Skald/issues/19)
+- [Port Skald to macOS](https://github.com/gstrand99/Skald/issues/18)
+- [Port Skald to Windows](https://github.com/gstrand99/Skald/issues/19)

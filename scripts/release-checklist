@@ -46,7 +46,7 @@ Functional validation:
 - Overlay visualizer mode.
 - Tray starts or fails clearly when StatusNotifier/AppIndicator is unavailable.
 - Cleanup remains disabled by default.
-- Desktop matrix notes updated for tested Hyprland, GNOME, KDE, Sway, X11, and headless limitations.
+- Desktop matrix notes updated for the validated Hyprland target and known limitations on other sessions.
 - Release notes list known desktop, GPU, CUDA, signing, and packaging limitations.
 - Artifacts and logs contain no model weights, audio, transcript text, user config, API keys, or proprietary CUDA libraries.
 CHECKLIST
