@@ -194,6 +194,10 @@ completions shell:
 bench-asr wav: build
     target/debug/skald bench asr {{wav}}
 
+# Run a redacted diagnostics benchmark for a WAV file.
+diagnostics-benchmark wav: build
+    target/debug/skald diagnostics benchmark --json {{wav}}
+
 # Benchmark loading the configured ASR model.
 bench-model-load: build
     target/debug/skald bench model-load

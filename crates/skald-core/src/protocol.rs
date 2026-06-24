@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::cleanup::CleanupOverride;
+use crate::diagnostics::DiagnosticsSnapshot;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
@@ -105,6 +106,11 @@ pub enum Command {
         #[serde(default = "default_true")]
         include_cold_load: bool,
     },
+    DiagnosticsPerformance,
+    DiagnosticsBenchmark {
+        audio_path: PathBuf,
+    },
+    DiagnosticsClear,
     AsrStatus,
     AsrLoad,
     AsrUnload,
@@ -177,6 +183,8 @@ pub struct Response {
     pub dictation: Option<DictationResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_bench_results: Option<Vec<ModelBenchResult>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<DiagnosticsSnapshot>,
 }
 
 fn default_true() -> bool {

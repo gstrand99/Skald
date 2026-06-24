@@ -5,6 +5,7 @@ pub mod client;
 pub mod commands;
 pub mod config;
 pub mod desktop;
+pub mod diagnostics;
 pub mod download;
 pub mod models;
 pub mod paths;
