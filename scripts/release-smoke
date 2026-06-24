@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+archive="${1:?archive path required}"
+profile="${2:?profile required: cpu|cuda}"
+workdir="$(mktemp -d)"
+trap 'rm -rf "${workdir}"' EXIT
+
+tar -C "${workdir}" -xzf "${archive}"
+root="$(find "${workdir}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+
+for binary in skald skaldd skald-overlay skald-tray; do
+  test -x "${root}/bin/${binary}"
+done
+
+"${root}/bin/skald" --version
+"${root}/bin/skald" version --json | jq -e '.version and .commit and .target' >/dev/null
+daemon_info="$("${root}/bin/skaldd" --build-info-json)"
+echo "${daemon_info}" | jq -e '.version and .commit and .target and .acceleration' >/dev/null
+
+if [[ "${profile}" == "cuda" ]]; then
+  echo "${daemon_info}" | jq -e '.acceleration == "cuda"' >/dev/null
+else
+  echo "${daemon_info}" | jq -e '.acceleration == "cpu"' >/dev/null
+fi
+
+if tar -tzf "${archive}" | grep -E '(^|/)(models|config\.toml|\.env|id_rsa|openrouter|api[_-]?key)' >/dev/null; then
+  echo "archive contains forbidden model, config, or secret-looking content" >&2
+  exit 1
+fi
+
+sha256sum --check "${archive}.sha256"

@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat <<'CHECKLIST'
+Skald Linux release validation checklist
+
+Automated before publish:
+- just check
+- just release-archives
+- just release-smoke
+- just release-checksums
+- just release-sign
+
+Manual clean install:
+- Verify archive checksum and signature.
+- Extract archive into a temporary directory.
+- Install binaries to ~/.local/bin or another user-local bin directory.
+- Run skald version --json and skaldd --build-info-json.
+- Run skald setup or skald config init plus the selected profile.
+- Run skald doctor.
+- Install and start the systemd user service.
+
+Manual upgrade:
+- Preserve ~/.config/skald, ~/.local/share/skald/models, styles, apps, snippets, and keyring entries.
+- Stop skaldd.service.
+- Replace binaries from the new archive.
+- Run skald config upgrade.
+- Run skald service install and systemctl --user restart skaldd.service.
+- Run skald doctor.
+
+Manual rollback:
+- Stop skaldd.service.
+- Replace binaries from the previous signed archive.
+- Restore config from backup if the newer version performed irreversible migrations.
+- Run skald service install and systemctl --user restart skaldd.service.
+- Run skald doctor.
+
+Functional validation:
+- CPU doctor output on the CPU-safe archive.
+- CUDA doctor output on the CUDA archive and tested NVIDIA driver.
+- Microphone capture.
+- Final local transcription.
+- Clipboard delivery.
+- Safe-paste fallback and target-change handling.
+- Overlay text mode.
+- Overlay visualizer mode.
+- Tray starts or fails clearly when StatusNotifier/AppIndicator is unavailable.
+- Cleanup remains disabled by default.
+- Desktop matrix notes updated for tested Hyprland, GNOME, KDE, Sway, X11, and headless limitations.
+- Release notes list known desktop, GPU, CUDA, signing, and packaging limitations.
+- Artifacts and logs contain no model weights, audio, transcript text, user config, API keys, or proprietary CUDA libraries.
+CHECKLIST

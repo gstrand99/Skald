@@ -17,6 +17,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::{Context, Result};
 use clap::Parser;
 use skald_core::{
+    build_info,
     config::{AutoPasteMode, Config},
     protocol::{DaemonStatus, ModelState},
     runtime::{ensure_runtime_dir_for, secure_socket_permissions, socket_path_for},
@@ -36,11 +37,25 @@ use crate::jobs::AppState;
 struct Args {
     #[arg(long)]
     foreground: bool,
+    #[arg(long)]
+    build_info_json: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _args = Args::parse();
+    let args = Args::parse();
+    if args.build_info_json {
+        let acceleration = if cfg!(feature = "asr-whisper-rs-cuda") {
+            "cuda"
+        } else {
+            "cpu"
+        };
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&build_info::build_info(acceleration))?
+        );
+        return Ok(());
+    }
     let config = Config::load_validated()?;
     tracing_subscriber::fmt()
         .with_env_filter(

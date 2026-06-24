@@ -25,6 +25,8 @@ Push-to-talk aliases: `skald ptt-start`, `skald ptt-stop`.
 
 | Command | Description |
 |---------|-------------|
+| `skald version --json` | Build version, commit, tag, target, toolchain, and acceleration metadata |
+| `skaldd --build-info-json` | Daemon build metadata, including CPU or CUDA ASR backend |
 | `skald status` | Daemon and job state |
 | `skald watch` | Stream daemon events and preview text |
 | `skald waybar` | Stream privacy-safe Waybar JSON status updates |
