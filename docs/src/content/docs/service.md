@@ -22,6 +22,22 @@ skald service status
 systemctl --user status skaldd
 ```
 
+Stop or restart the service:
+
+```bash
+skald service stop
+skald service restart
+```
+
+Remove the unit:
+
+```bash
+skald service uninstall
+```
+
+`skald service uninstall` disables the unit, stops it if running, and removes
+`~/.config/systemd/user/skaldd.service`.
+
 ## Compositor shortcuts
 
 Skald does not capture global hotkeys inside the daemon. Bind your compositor or
