@@ -36,6 +36,7 @@ export default defineConfig({
 						{ label: "asr", slug: "configuration/asr" },
 						{ label: "vocabulary", slug: "configuration/vocabulary" },
 						{ label: "cleanup", slug: "configuration/cleanup" },
+						{ label: "diagnostics", slug: "configuration/diagnostics" },
 						{ label: "secrets", slug: "configuration/secrets" },
 						{ label: "injection", slug: "configuration/injection" },
 						{ label: "notifications", slug: "configuration/notifications" },

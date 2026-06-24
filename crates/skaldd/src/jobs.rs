@@ -6,6 +6,7 @@ use skald_core::{
         AudioGatesConfig, CleanupConfig, Config, InjectionConfig, NotificationsConfig, PathsConfig,
         PrivacyConfig, SecretsConfig, VoiceCommandsConfig,
     },
+    diagnostics::DiagnosticsStore,
     protocol::{
         AsrBenchmark, AudioRecording, DaemonStatus, DictationResult, Event, JobId, JobState,
         ModelState, PROTOCOL_VERSION, ProtocolError, Response, SessionEnvironment, Transcript,
@@ -36,6 +37,7 @@ pub(crate) struct AppState {
     pub(crate) injection: InjectionConfig,
     pub(crate) notifications: NotificationsConfig,
     pub(crate) privacy: PrivacyConfig,
+    pub(crate) diagnostics: Mutex<DiagnosticsStore>,
     pub(crate) target_at_start: Mutex<Option<skald_platform::TargetContext>>,
     pub(crate) cleanup_override: Mutex<Option<CleanupOverride>>,
     pub(crate) style_override: Mutex<Option<String>>,
@@ -208,6 +210,7 @@ pub(crate) fn daemon_environment_response(request_id: String, status: DaemonStat
         cleanup_ms: None,
         dictation: None,
         model_bench_results: None,
+        diagnostics: None,
     }
 }
 
@@ -270,6 +273,7 @@ pub(crate) fn data_response_with(
         cleanup_ms,
         dictation,
         model_bench_results: None,
+        diagnostics: None,
     }
 }
 
@@ -296,6 +300,7 @@ pub(crate) fn error_response(
         cleanup_ms: None,
         dictation: None,
         model_bench_results: None,
+        diagnostics: None,
     }
 }
 
@@ -383,6 +388,7 @@ mod tests {
             injection: InjectionConfig::default(),
             notifications: NotificationsConfig::default(),
             privacy: PrivacyConfig::default(),
+            diagnostics: Mutex::new(DiagnosticsStore::new(false, 50)),
             target_at_start: Mutex::new(None),
             cleanup_override: Mutex::new(None),
             style_override: Mutex::new(None),

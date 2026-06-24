@@ -49,6 +49,7 @@ Each top-level table in `config.toml` is documented in its own page:
 | `[asr]` / lifecycle / hallucination filter | [ASR](/configuration/asr/) |
 | `[vocabulary]` | [Vocabulary](/configuration/vocabulary/) |
 | `[cleanup]` | [Cleanup](/configuration/cleanup/) |
+| `[diagnostics]` | [Performance diagnostics](/configuration/diagnostics/) |
 | `[secrets]` | [Secrets](/configuration/secrets/) |
 | `[injection]` / `[injection.linux]` | [Injection](/configuration/injection/) |
 | `[notifications]` | [Notifications](/configuration/notifications/) |

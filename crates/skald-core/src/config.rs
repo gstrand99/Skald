@@ -59,6 +59,7 @@ pub struct Config {
     pub asr: AsrConfig,
     pub vocabulary: VocabularyConfig,
     pub cleanup: CleanupConfig,
+    pub diagnostics: DiagnosticsConfig,
     pub secrets: SecretsConfig,
     pub injection: InjectionConfig,
     pub notifications: NotificationsConfig,
@@ -279,6 +280,13 @@ pub struct CleanupConfig {
     pub skip_if_word_count_below: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiagnosticsConfig {
+    pub enabled: bool,
+    pub max_records: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoPasteMode {
@@ -459,6 +467,14 @@ impl Default for CleanupConfig {
         }
     }
 }
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_records: 50,
+        }
+    }
+}
 impl Default for InjectionConfig {
     fn default() -> Self {
         Self {
@@ -500,6 +516,7 @@ impl Default for Config {
             asr: AsrConfig::default(),
             vocabulary: VocabularyConfig::default(),
             cleanup: CleanupConfig::default(),
+            diagnostics: DiagnosticsConfig::default(),
             secrets: SecretsConfig::default(),
             injection: InjectionConfig::default(),
             notifications: NotificationsConfig::default(),
@@ -663,6 +680,7 @@ impl Config {
         collect_audio_errors(self, &mut errors);
         collect_asr_errors(self, &mut errors);
         collect_secrets_and_cleanup_errors(self, &mut errors);
+        collect_diagnostics_errors(self, &mut errors);
         collect_injection_and_paths_errors(self, &mut errors);
         collect_privacy_reserved_errors(self, &mut errors);
         collect_overlay_and_preview_errors(self, &mut errors);
@@ -689,6 +707,18 @@ impl Config {
             ));
         }
         warnings
+    }
+}
+
+fn collect_diagnostics_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    if config.diagnostics.max_records == 0 {
+        push_validation(errors, "diagnostics.max_records must be at least 1".into());
+    }
+    if config.diagnostics.max_records > 1_000 {
+        push_validation(
+            errors,
+            "diagnostics.max_records must be 1000 or lower".into(),
+        );
     }
 }
 

@@ -86,6 +86,10 @@ enum Commands {
         #[command(subcommand)]
         command: BenchCommands,
     },
+    Diagnostics {
+        #[command(subcommand)]
+        command: DiagnosticsCommands,
+    },
     Vocab {
         #[command(subcommand)]
         command: VocabCommands,
@@ -103,6 +107,8 @@ enum Commands {
     Doctor {
         #[arg(long)]
         json: bool,
+        #[arg(long)]
+        include_performance: bool,
     },
     Setup {
         /// Skip setup when a config file already exists (never overwrite).
@@ -263,6 +269,20 @@ enum BenchCommands {
 }
 
 #[derive(Debug, Subcommand)]
+enum DiagnosticsCommands {
+    Performance {
+        #[arg(long)]
+        json: bool,
+    },
+    Benchmark {
+        audio_file: std::path::PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    Clear,
+}
+
+#[derive(Debug, Subcommand)]
 enum VocabCommands {
     List,
     Test {
@@ -315,6 +335,8 @@ struct DoctorReport {
     audio: AudioReport,
     suggestions: Vec<String>,
     remediation_commands: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    performance_warnings: Option<Vec<skald_core::diagnostics::DiagnosticWarning>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -364,6 +386,7 @@ struct PrivacyReport {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -404,6 +427,7 @@ async fn main() -> Result<()> {
             print_response(&send(command).await?)?;
         }
         Commands::Bench { command } => handle_bench(command).await?,
+        Commands::Diagnostics { command } => diagnostics(command).await?,
         Commands::Vocab { command } => vocab(command)?,
         Commands::Record {
             seconds,
@@ -417,7 +441,10 @@ async fn main() -> Result<()> {
                 print_cleanup_response(&send(Command::TestOpenrouter).await?)?;
             }
         },
-        Commands::Doctor { json } => doctor(json).await?,
+        Commands::Doctor {
+            json,
+            include_performance,
+        } => doctor(json, include_performance).await?,
         Commands::Setup {
             if_missing,
             force,
@@ -462,6 +489,32 @@ async fn main() -> Result<()> {
             _ => snippets_cmd::run(command)?,
         },
         Commands::Routing { command } => commands_cmd::run(command)?,
+    }
+    Ok(())
+}
+
+async fn diagnostics(command: DiagnosticsCommands) -> Result<()> {
+    match command {
+        DiagnosticsCommands::Performance { json } => {
+            print_diagnostics_response(&send(Command::DiagnosticsPerformance).await?, json)?;
+        }
+        DiagnosticsCommands::Benchmark { audio_file, json } => {
+            print_diagnostics_response(
+                &send(Command::DiagnosticsBenchmark {
+                    audio_path: audio_file,
+                })
+                .await?,
+                json,
+            )?;
+        }
+        DiagnosticsCommands::Clear => {
+            let response = send(Command::DiagnosticsClear).await?;
+            if response.ok {
+                println!("diagnostics records cleared");
+            } else {
+                print_response(&response)?;
+            }
+        }
     }
     Ok(())
 }
@@ -883,6 +936,98 @@ fn print_cleanup_response(response: &Response) -> Result<()> {
     print_response(response)
 }
 
+fn print_diagnostics_response(response: &Response, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(response)?);
+        return Ok(());
+    }
+    if !response.ok {
+        return print_response(response);
+    }
+    let Some(snapshot) = &response.diagnostics else {
+        println!("no diagnostics returned");
+        return Ok(());
+    };
+    println!(
+        "diagnostics: enabled={} retained={}/{} dropped={}",
+        snapshot.enabled, snapshot.records_retained, snapshot.capacity, snapshot.dropped_records
+    );
+    if !snapshot.enabled {
+        println!("performance diagnostics are disabled; set diagnostics.enabled = true");
+        return Ok(());
+    }
+    if snapshot.records.is_empty() {
+        println!("no performance records retained");
+    }
+    for warning in &snapshot.warnings {
+        println!("warning: {}: {}", warning.code, warning.message);
+    }
+    for record in &snapshot.records {
+        println!(
+            "#{} {} {} model={} backend={} threads={}",
+            record.sequence,
+            record.source_name(),
+            record.outcome.status,
+            record.context.model,
+            record.context.acceleration_backend,
+            record.context.thread_count
+        );
+        println!(
+            "  recording={} asr={} rtf={} load={} total={}",
+            format_measurement_ms(&record.timings.recording_duration_ms),
+            format_measurement_ms(&record.timings.asr_inference_ms),
+            format_rtf(&record.timings.asr_real_time_factor_milli),
+            format_measurement_ms(&record.timings.model_load_ms),
+            format_measurement_ms(&record.timings.end_to_end_ms)
+        );
+        println!(
+            "  cleanup={} insertion={} clipboard={} paste={}",
+            format_measurement_ms(&record.cleanup.duration_ms),
+            record.insertion.outcome,
+            format_measurement_ms(&record.timings.clipboard_ms),
+            format_measurement_ms(&record.timings.paste_attempt_ms)
+        );
+        if let Some(code) = &record.outcome.error_code {
+            println!("  error={code}");
+        }
+        if let Some(code) = &record.insertion.warning_code {
+            println!("  insertion_warning={code}");
+        }
+    }
+    Ok(())
+}
+
+trait DiagnosticSourceName {
+    fn source_name(&self) -> &'static str;
+}
+
+impl DiagnosticSourceName for skald_core::diagnostics::PerformanceRecord {
+    fn source_name(&self) -> &'static str {
+        match &self.source {
+            skald_core::diagnostics::DiagnosticSource::Dictation => "dictation",
+            skald_core::diagnostics::DiagnosticSource::Benchmark => "benchmark",
+        }
+    }
+}
+
+fn format_measurement_ms(value: &skald_core::diagnostics::Measurement<u64>) -> String {
+    match value {
+        skald_core::diagnostics::Measurement::Unavailable => "unavailable".into(),
+        skald_core::diagnostics::Measurement::NotAttempted => "not_attempted".into(),
+        skald_core::diagnostics::Measurement::Failed { code } => format!("failed({code})"),
+        skald_core::diagnostics::Measurement::Value(ms) => format!("{ms}ms"),
+    }
+}
+
+fn format_rtf(value: &skald_core::diagnostics::Measurement<u64>) -> String {
+    match value {
+        skald_core::diagnostics::Measurement::Value(milli) => {
+            format!("{}.{:02}x", milli / 1000, (milli % 1000) / 10)
+        }
+        other => format_measurement_ms(other),
+    }
+}
+
 async fn model_integrity(
     model_dir: &std::path::Path,
     model_path: &std::path::Path,
@@ -932,9 +1077,12 @@ async fn preview_doctor_report(
     }
 }
 
-async fn doctor(json: bool) -> Result<()> {
+async fn doctor(json: bool, include_performance: bool) -> Result<()> {
     let config = Config::load_or_default()?;
     let mut report = build_doctor_report(&config).await?;
+    if include_performance {
+        report.performance_warnings = fetch_performance_warnings().await?;
+    }
     report.suggestions = build_doctor_suggestions(&report);
     report.remediation_commands = build_doctor_remediation(&report);
     if json {
@@ -957,6 +1105,14 @@ fn doctor_has_failures(report: &DoctorReport) -> bool {
             .socket_path
             .as_ref()
             .is_some_and(|_| !report.socket_secure)
+}
+
+async fn fetch_performance_warnings()
+-> Result<Option<Vec<skald_core::diagnostics::DiagnosticWarning>>> {
+    match send(Command::DiagnosticsPerformance).await {
+        Ok(response) if response.ok => Ok(response.diagnostics.map(|snapshot| snapshot.warnings)),
+        Ok(_) | Err(_) => Ok(None),
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1070,6 +1226,7 @@ async fn build_doctor_report(config: &Config) -> Result<DoctorReport> {
         audio,
         suggestions: Vec::new(),
         remediation_commands: Vec::new(),
+        performance_warnings: None,
     })
 }
 
@@ -1331,6 +1488,16 @@ fn print_doctor(report: &DoctorReport) {
         println!("  Warning: auto_paste = \"always\" bypasses paste-safety target checks.");
     }
     println!("  Behavior: {}", report.paste.reason);
+    if let Some(warnings) = &report.performance_warnings {
+        println!("Performance:");
+        if warnings.is_empty() {
+            println!("  no warnings");
+        } else {
+            for warning in warnings {
+                println!("  {}: {}", warning.code, warning.message);
+            }
+        }
+    }
     if !report.suggestions.is_empty() {
         println!("Suggestions:");
         for suggestion in &report.suggestions {
