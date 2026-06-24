@@ -11,6 +11,7 @@
 ```bash
 bun install
 bun run dev       # local dev server
+bun run check     # astro typecheck
 bun run build     # output to dist/
 bun run deploy    # build + wrangler deploy to Cloudflare Workers
 ```

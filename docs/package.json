@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "astro dev",
     "start": "astro dev",
+    "check": "astro check",
     "build": "astro build",
     "preview": "astro preview",
     "deploy": "astro build && wrangler deploy",
@@ -17,6 +18,8 @@
     "starlight-theme-gruvbox": "^2.0.0"
   },
   "devDependencies": {
+    "@astrojs/check": "^0.9.9",
+    "typescript": "^6.0.3",
     "wrangler": "^4.99.0"
   }
 }

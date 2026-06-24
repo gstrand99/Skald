@@ -4,23 +4,22 @@ description: Reference workstation latency measurements.
 ---
 
 Recorded on the primary development machine (Ryzen 5900X-class, RTX 3070 Ti,
-Hyprland Wayland, CUDA `skaldd` build, `power-user-nvidia` profile, warm ASR
-model).
-
-CPU-safe (`cpu-safe` profile) numbers are not published here yet. Run the
-commands in [Re-run locally](#re-run-locally) on a CPU-only archive build and
-add a section before tagging if you ship CPU-safe as the primary artifact.
+Hyprland Wayland).
 
 ## Fixtures
 
 | Fixture | Duration | Notes |
 |---------|----------|-------|
-| Long speech sample | ~50 s | Transcribe-only numbers below |
-| Short bench clip | ~4.9 s | Full dictation-path benches |
+| Long speech sample | ~50 s | CUDA transcribe-only numbers below |
+| Setup fixture | ~9.9 s | CPU and CUDA dictation-path benches |
 
 `bench dictation` reads an existing WAV and does not delete the source file.
 
-## Transcribe only (`skald bench end-to-end`)
+## CUDA profile (`power-user-nvidia`)
+
+CUDA `skaldd` build, warm `ggml-large-v3-turbo-q5_0.bin`.
+
+### Transcribe only (`skald bench end-to-end`)
 
 Long fixture (~50 s):
 
@@ -37,7 +36,7 @@ Short fixture (~4.9 s):
 
 Cold model load (`skald bench model-load` after unload): **125–139 ms**.
 
-## Full dictation path (`skald bench dictation`)
+### Full dictation path (`skald bench dictation`)
 
 Short fixture (~4.9 s), cleanup disabled (`--no-cleanup`):
 
@@ -56,12 +55,58 @@ Paste attempt (`--paste --no-cleanup`) from an unfocused terminal: paste skipped
 (active target unstable); stop-to-clipboard **322 ms**. Re-run with a stable
 editor focused to measure stop-to-insert.
 
+### CUDA sign-off
+
+| Field | Value |
+|-------|-------|
+| Machine | Ryzen 5900X-class + RTX 3070 Ti |
+| Session | Hyprland Wayland |
+| Profile | `power-user-nvidia` |
+| ASR model | `ggml-large-v3-turbo-q5_0.bin` |
+| Validated | 2026-06-11 |
+
+## CPU profile (`cpu-safe`)
+
+CPU `skaldd` build, `cpu-safe` profile, `ggml-small.en.bin`, setup fixture
+(~9.9 s).
+
+### Transcribe only (`skald bench end-to-end`)
+
+| Run | Audio | Model load | Transcribe | Total ASR |
+|-----|-------|------------|------------|-----------|
+| Warm | 9940 ms | 221 ms | 2718 ms | 2939 ms |
+| Warm (repeat) | 9940 ms | 217 ms | 2679 ms | 2896 ms |
+
+Cold model load (`skald bench model-load` after unload): **208 ms**.
+
+### Full dictation path (`skald bench dictation`)
+
+Setup fixture (~9.9 s), cleanup disabled (`--no-cleanup`):
+
+| Run | Model load | Transcribe | Stop-to-clipboard |
+|-----|------------|------------|-------------------|
+| 1 | 0 ms | 2775 ms | 2891 ms |
+| 2 (repeat) | 215 ms | 2702 ms | 3028 ms |
+
+### CPU sign-off
+
+| Field | Value |
+|-------|-------|
+| Machine | Ryzen 5900X-class |
+| Session | Hyprland Wayland |
+| Profile | `cpu-safe` |
+| ASR model | `ggml-small.en.bin` |
+| Validated | 2026-06-24 |
+
 ## Latency targets
 
-Targets assume a **10-second** utterance. On this profile, warm local-only
+Targets assume a **10-second** utterance. On the CUDA profile, warm local-only
 dictation (no cleanup) is well under the **1.5 s** stop-to-clipboard p50 target.
-Cleanup adds provider latency; the short-fixture run above stayed under **1.2 s**
+Cleanup adds provider latency; the short CUDA fixture run stayed under **1.2 s**
 total stop-to-clipboard.
+
+On the CPU profile with `small.en`, warm stop-to-clipboard is about **2.9–3.0 s**
+for the ~10 s setup fixture.
 
 ## Re-run locally
 
@@ -73,12 +118,5 @@ just bench-dictation /path/to/sample.wav --paste
 just bench-model-load
 ```
 
-## Sign-off
-
-| Field | Value |
-|-------|-------|
-| Machine | Ryzen 5900X-class + RTX 3070 Ti |
-| Session | Hyprland Wayland |
-| Profile | `power-user-nvidia` |
-| ASR model | `ggml-large-v3-turbo-q5_0.bin` |
-| Validated | 2026-06-11 |
+For CPU-safe numbers, use a CPU `skaldd` build and `skald config profile cpu-safe`
+before benchmarking.

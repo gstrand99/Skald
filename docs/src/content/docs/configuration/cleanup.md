@@ -24,12 +24,15 @@ skip_if_word_count_below = 5
 |--------|------|---------|-------------|
 | `enabled` | boolean | `false` | Master switch. When false, raw ASR text is used (unless overridden per job with `--cleanup`). |
 | `provider` | string | `"none"` | Cleanup backend. Use `"openrouter"` when enabled. Cannot be `"none"` while `enabled = true`. |
-| `model` | string | `"~openai/gpt-mini-latest"` | OpenRouter model id when provider is `openrouter`. Required when cleanup is enabled. The `~` prefix is stripped before the API call. |
+| `model` | string | `""` in a fresh `config init` | OpenRouter model id when provider is `openrouter`. Required when cleanup is enabled. The `~` prefix is stripped before the API call. When empty on disk, `skald cleanup enable` and the daemon fill in `~openai/gpt-mini-latest` at runtime. |
 | `default_style` | string | `"default"` | Name of a style under `paths.config_dir/styles/`. Each style has a `.toml` manifest and `.md` system prompt. |
 | `temperature` | float | `0.2` | Sampling temperature sent to the cleanup model. Lower values are more deterministic. |
 | `timeout_ms` | integer | `10000` | HTTP timeout for cleanup requests in milliseconds. |
 | `fallback_to_raw_on_error` | boolean | `true` | When true, use the raw transcript if cleanup fails or times out. |
 | `skip_if_word_count_below` | integer | `5` | Skip cleanup when the word count is below this threshold (short utterances stay raw). |
+
+Fresh `config init` writes `model = ""` while cleanup is disabled. The example
+above shows the effective model after enabling cleanup.
 
 ## Enabling cleanup
 
