@@ -208,6 +208,8 @@ User documentation is published at [tryskald.dev](https://tryskald.dev) (source 
 [`docs/`](docs/)): install, setup wizard, configuration, CLI reference,
 troubleshooting, and the Linux desktop matrix.
 
+Planned release work is tracked in [ROADMAP.md](ROADMAP.md).
+
 ```bash
 # Tagged archive release
 just release-archives
