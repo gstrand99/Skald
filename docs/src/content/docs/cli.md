@@ -89,7 +89,7 @@ are included as completion candidates.
 
 ```bash
 skald secrets set openrouter
-skald secrets status openrouter
+skald secrets status
 skald cleanup enable openrouter
 skald cleanup disable
 skald cleanup preview "sample dictated text"

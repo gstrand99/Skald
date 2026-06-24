@@ -13,7 +13,7 @@ export default defineConfig({
 				{
 					icon: "github",
 					label: "GitHub",
-					href: "https://github.com/gstrand/skald",
+					href: "https://github.com/gstrand99/Skald",
 				},
 			],
 			plugins: [gruvbox()],
@@ -61,6 +61,8 @@ export default defineConfig({
 						{ label: "Releases", slug: "linux/releases" },
 						{ label: "Desktop matrix", slug: "linux/desktop-matrix" },
 						{ label: "Benchmark results", slug: "linux/benchmarks" },
+						{ label: "Waybar", slug: "linux/waybar" },
+						{ label: "Tray client", slug: "linux/tray" },
 					],
 				},
 			],

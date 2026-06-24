@@ -70,5 +70,6 @@ unsupported-feature error. Rebuild with `just release-cuda` or set `gpu = false`
 
 ## Desktop validation
 
-See the [Desktop matrix](/linux/desktop-matrix/) for session-by-session support
-and manual sign-off notes.
+See the [Desktop matrix](/linux/desktop-matrix/) for the Hyprland 1.0 sign-off
+and expected behavior on other sessions. Only Hyprland is validated for the
+first release.
