@@ -1,4 +1,5 @@
 pub mod apps;
+pub mod build_info;
 pub mod cleanup;
 pub mod client;
 pub mod commands;

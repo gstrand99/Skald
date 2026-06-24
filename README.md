@@ -209,17 +209,31 @@ User documentation is published at [tryskald.dev](https://tryskald.dev) (source 
 troubleshooting, and the Linux desktop matrix.
 
 ```bash
-# GPU (CUDA daemon)
+# Tagged archive release
+just release-archives
+just release-smoke
+just release-checksums
+just release-sign
+just release-checklist
+
+# Local GPU source install (CUDA daemon)
 just release-cuda
 just install-cuda         # install without rebuilding a CPU skaldd
 
-# CPU-only
+# Local CPU source install
 just release
 just install
 
+skald version --json
+skaldd --build-info-json
 skald setup             # interactive probe, models, benchmarks, config
 skald doctor
 ```
+
+Release archives include `skald`, `skaldd`, `skald-overlay`, and `skald-tray`.
+They do not include model weights, API keys, user configuration, or proprietary
+CUDA libraries. See [Linux releases](docs/src/content/docs/linux/releases.md)
+for signing, upgrade, rollback, CUDA target, and validation details.
 
 ## Development
 

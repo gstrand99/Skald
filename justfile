@@ -204,12 +204,56 @@ build-cuda:
 
 # Optimized release builds for local installation.
 release:
-    cargo build --workspace --release
+    cargo build --workspace --release --locked
 
-# CUDA release build for the power-user profile (skaldd + CLI + overlay).
+# CUDA release build for the power-user profile (skaldd + CLI + overlay + tray).
 release-cuda:
-    cargo build -p skaldd --release --no-default-features --features asr-whisper-rs-cuda
-    cargo build -p skald-cli -p skald-overlay -p skald-tray --release
+    cargo build -p skaldd --release --locked --no-default-features --features asr-whisper-rs-cuda
+    cargo build -p skald-cli -p skald-overlay -p skald-tray --release --locked
+
+# Build CPU-safe and CUDA release archives in dist/.
+release-archives:
+    scripts/release-package cpu
+    scripts/release-package cuda
+
+# Build a CPU-safe release archive without requiring a tag or clean worktree.
+release-archive-dry-run:
+    SKALD_RELEASE_DRY_RUN=1 scripts/release-package cpu
+
+# Smoke-test release archives from dist/ after extraction.
+release-smoke:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for archive in dist/*-cpu.tar.gz; do
+        scripts/release-smoke "${archive}" cpu
+    done
+    for archive in dist/*-cuda.tar.gz; do
+        scripts/release-smoke "${archive}" cuda
+    done
+
+# Verify SHA-256 manifests for all release archives.
+release-checksums:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for manifest in dist/*.tar.gz.sha256; do
+        sha256sum --check "${manifest}"
+    done
+
+# GPG-sign release archives and checksum manifests.
+release-sign:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for artifact in dist/*.tar.gz dist/*.tar.gz.sha256; do
+        gpg --batch --yes --armor --detach-sign ${SKALD_SIGNING_KEY:+--local-user "$SKALD_SIGNING_KEY"} "${artifact}"
+    done
+
+# Generate draft release notes.
+release-notes previous="":
+    scripts/release-notes "v$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skald-core") | .version')" "{{previous}}"
+
+# Print the manual Linux release validation checklist.
+release-checklist:
+    scripts/release-checklist
 
 # Print transcribe-path benchmark timings for a WAV file.
 bench-e2e wav: build
@@ -263,12 +307,15 @@ docs-dev:
 docs-build:
     cd docs && bun run build
 
+# Validate docs build.
+docs-check: docs-build
+
 # Build and deploy docs to Cloudflare Workers (tryskald.dev).
 docs-deploy:
     cd docs && bun run deploy
 
 # Run formatting, linting, and tests.
-check:
+check: docs-check
     cargo fmt --check
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace

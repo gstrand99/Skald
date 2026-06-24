@@ -16,7 +16,7 @@ use clap_complete::Shell;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
 use skald_core::{
-    apps,
+    apps, build_info,
     cleanup::{CLEANUP_COST_WARNING, CleanupOverride},
     client, commands,
     config::{AutoPasteMode, Config},
@@ -37,6 +37,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
+    Version {
+        #[arg(long)]
+        json: bool,
+    },
     Status,
     Toggle {
         #[arg(long, conflicts_with = "no_cleanup")]
@@ -363,6 +367,7 @@ struct PrivacyReport {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Version { json } => version(json)?,
         Commands::Status => print_response(&send(Command::Status).await?)?,
         Commands::Toggle {
             cleanup,
@@ -457,6 +462,22 @@ async fn main() -> Result<()> {
             _ => snippets_cmd::run(command)?,
         },
         Commands::Routing { command } => commands_cmd::run(command)?,
+    }
+    Ok(())
+}
+
+fn version(json: bool) -> Result<()> {
+    let info = build_info::build_info("none");
+    if json {
+        println!("{}", serde_json::to_string_pretty(&info)?);
+    } else {
+        println!("Skald {}", info.version);
+        println!("commit: {}", info.commit);
+        println!("tag: {}", info.tag);
+        println!("target: {}", info.target);
+        println!("rustc: {}", info.rustc);
+        println!("acceleration: {}", info.acceleration);
+        println!("cuda_target: {}", info.cuda_target);
     }
     Ok(())
 }
