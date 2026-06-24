@@ -64,7 +64,7 @@ See [Related files](/configuration/related-files/).
 ## Example file
 
 A commented reference copy ships in the repository:
-[`config-example/linux/config.toml`](https://github.com/gstrand/skald/blob/main/config-example/linux/config.toml).
+[`config-example/linux/config.toml`](https://github.com/gstrand99/Skald/blob/main/config-example/linux/config.toml).
 
 ## Preset profiles
 
