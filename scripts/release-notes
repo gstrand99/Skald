@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skald-core") | .version')"
+tag="${1:-v${version}}"
+previous="${2:-}"
+
+echo "# Skald ${tag}"
+echo
+echo "Linux release artifacts:"
+echo
+echo "- CPU-safe archive: skald-${version}-linux-*-cpu.tar.gz"
+echo "- CUDA archive: skald-${version}-linux-*-cuda.tar.gz"
+echo "- SHA-256 manifests and detached ASCII signatures"
+echo "- Source archive from GitHub Releases"
+echo
+echo "CUDA target:"
+echo
+echo "- CUDA 13.3 line, Linux NVIDIA driver >=610.43.02 for the tested release host"
+echo "- CUDA 13.x minor-version compatibility requires Linux driver >=580"
+echo "- Exact tested driver/toolkit are recorded in BUILD-METADATA.toml"
+echo
+echo "Install and upgrade:"
+echo
+echo "- Verify checksums and signatures before extracting."
+echo "- Replace user-local binaries only; user config, styles, snippets, models, and keyring entries are not part of the archive."
+echo "- Run skald config upgrade after replacing binaries."
+echo "- Restart skaldd.service after upgrade."
+echo
+echo "Known limitations:"
+echo
+echo "- No model weights are bundled."
+echo "- No proprietary CUDA libraries are bundled."
+echo "- Distro-native packages are deferred until archive releases are stable."
+echo "- macOS and Windows release pipelines are out of scope."
+echo
+if [[ -n "${previous}" ]]; then
+  echo "Changes since ${previous}:"
+  git log --oneline "${previous}..${tag}"
+fi

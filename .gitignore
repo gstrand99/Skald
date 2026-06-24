@@ -1,4 +1,5 @@
 /target/
+/dist/
 *.swp
 *.swo
 .DS_Store
@@ -8,4 +9,3 @@
 .env.*
 a.out
 **/secrets.toml
-

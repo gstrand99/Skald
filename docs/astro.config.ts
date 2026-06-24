@@ -57,6 +57,7 @@ export default defineConfig({
 				{
 					label: "Linux",
 					items: [
+						{ label: "Releases", slug: "linux/releases" },
 						{ label: "Desktop matrix", slug: "linux/desktop-matrix" },
 						{ label: "Benchmark results", slug: "linux/benchmarks" },
 					],

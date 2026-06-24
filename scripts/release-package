@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+profile="${1:-}"
+if [[ "${profile}" != "cpu" && "${profile}" != "cuda" ]]; then
+  echo "usage: scripts/release-package cpu|cuda" >&2
+  exit 2
+fi
+
+version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "skald-core") | .version')"
+tag="$(git describe --tags --exact-match 2>/dev/null || true)"
+commit="$(git rev-parse --short=12 HEAD)"
+target_triple="$(rustc -Vv | awk -F': ' '/^host:/ { print $2 }')"
+release_target="${SKALD_RELEASE_TARGET:-${target_triple}}"
+cuda_target="${SKALD_CUDA_TARGET:-cuda-13.3-linux-driver-610.43.02}"
+dist_dir="${SKALD_DIST_DIR:-dist}"
+staging="${dist_dir}/staging/skald-${version}-linux-${release_target}-${profile}"
+archive="${dist_dir}/skald-${version}-linux-${release_target}-${profile}.tar.gz"
+
+if [[ "${SKALD_RELEASE_DRY_RUN:-0}" != "1" ]]; then
+  if [[ -z "${tag}" ]]; then
+    echo "release packaging must run from an immutable release tag" >&2
+    exit 1
+  fi
+  if [[ "${tag}" != "v${version}" && "${tag}" != "${version}" ]]; then
+    echo "release tag ${tag} does not match workspace version ${version}" >&2
+    exit 1
+  fi
+  if [[ -n "$(git status --porcelain -- . ':!dist')" ]]; then
+    echo "release packaging requires a clean worktree" >&2
+    exit 1
+  fi
+fi
+
+mkdir -p "${dist_dir}" "$(dirname "${staging}")"
+rm -rf "${staging}" "${archive}"
+mkdir -p "${staging}/bin" "${staging}/docs"
+
+export SKALD_RELEASE_TARGET="${release_target}"
+export SKALD_CUDA_TARGET="${cuda_target}"
+
+case "${profile}" in
+  cpu)
+    cargo build --workspace --release --locked
+    ;;
+  cuda)
+    cargo build -p skaldd --release --locked --no-default-features --features asr-whisper-rs-cuda
+    cargo build -p skald-cli -p skald-overlay -p skald-tray --release --locked
+    ;;
+esac
+
+install -m 0755 target/release/skald "${staging}/bin/"
+install -m 0755 target/release/skaldd "${staging}/bin/"
+install -m 0755 target/release/skald-overlay "${staging}/bin/"
+install -m 0755 target/release/skald-tray "${staging}/bin/"
+install -m 0644 README.md LICENSE "${staging}/"
+install -m 0644 docs/src/content/docs/install.md "${staging}/docs/install.md"
+install -m 0644 docs/src/content/docs/service.md "${staging}/docs/service.md"
+install -m 0644 docs/src/content/docs/linux/desktop-matrix.md "${staging}/docs/desktop-matrix.md"
+
+{
+  echo "version = \"${version}\""
+  echo "tag = \"${tag:-unreleased}\""
+  echo "commit = \"${commit}\""
+  echo "profile = \"${profile}\""
+  echo "target = \"${release_target}\""
+  echo "cuda_target = \"${cuda_target}\""
+  echo "rustc = \"$(rustc -V)\""
+  echo "cargo = \"$(cargo -V)\""
+  if command -v nvcc >/dev/null 2>&1; then
+    echo "nvcc = \"$(nvcc --version | tail -n 1 | sed 's/"/\\"/g')\""
+  else
+    echo "nvcc = \"unavailable\""
+  fi
+  if command -v nvidia-smi >/dev/null 2>&1; then
+    echo "nvidia_smi = \"$(nvidia-smi --query-gpu=driver_version,name --format=csv,noheader | head -n 1 | sed 's/"/\\"/g')\""
+  else
+    echo "nvidia_smi = \"unavailable\""
+  fi
+} > "${staging}/BUILD-METADATA.toml"
+
+tar -C "$(dirname "${staging}")" -czf "${archive}" "$(basename "${staging}")"
+sha256sum "${archive}" > "${archive}.sha256"
+
+if [[ "${SKALD_SIGN_RELEASE:-0}" == "1" ]]; then
+  gpg_args=(--batch --yes --armor --detach-sign)
+  if [[ -n "${SKALD_SIGNING_KEY:-}" ]]; then
+    gpg_args+=(--local-user "${SKALD_SIGNING_KEY}")
+  fi
+  gpg "${gpg_args[@]}" "${archive}"
+  gpg "${gpg_args[@]}" "${archive}.sha256"
+elif [[ "${SKALD_REQUIRE_SIGNATURES:-0}" == "1" ]]; then
+  echo "SKALD_REQUIRE_SIGNATURES=1 but SKALD_SIGN_RELEASE is not enabled" >&2
+  exit 1
+fi
+
+echo "${archive}"
