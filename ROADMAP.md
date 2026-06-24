@@ -8,7 +8,7 @@ paths.
 
 - [Clean up public repository metadata](https://github.com/gstrand99/Skald/issues/58) — done in #59
 - Hyprland Wayland is the validated desktop target for 1.0; other sessions are best-effort.
-- Publish measured CPU and CUDA benchmark results.
+- Publish measured CPU and CUDA benchmark results — CUDA and CPU numbers are in [Benchmark results](https://tryskald.dev/linux/benchmarks/).
 - Verify clean install, upgrade, rollback, signing, and release archive smoke tests.
 
 ## Planned Linux improvements

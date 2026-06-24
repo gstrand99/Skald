@@ -1,5 +1,6 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
+import type { StarlightPlugin } from "@astrojs/starlight/types";
 import gruvbox from "starlight-theme-gruvbox";
 
 export default defineConfig({
@@ -16,7 +17,7 @@ export default defineConfig({
 					href: "https://github.com/gstrand99/Skald",
 				},
 			],
-			plugins: [gruvbox()],
+			plugins: [gruvbox() as StarlightPlugin],
 			sidebar: [
 				{
 					label: "Getting started",
