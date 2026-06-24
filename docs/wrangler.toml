@@ -1,4 +1,4 @@
-name = "skald-docs"
+name = "skald"
 compatibility_date = "2024-09-23"
 
 # Serves the static Astro build. Attach tryskald.dev in the Cloudflare dashboard.
