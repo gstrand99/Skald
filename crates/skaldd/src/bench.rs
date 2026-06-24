@@ -5,12 +5,16 @@ use std::{
 
 use skald_core::{
     config::Config,
+    diagnostics::{
+        DiagnosticOutcome, DiagnosticSource, Measurement, PreviewMetrics, TimingMetrics,
+    },
     protocol::{AsrBenchCandidate, JobId, JobState, ModelBenchResult, PROTOCOL_VERSION, Response},
 };
 
 use crate::{
     audio,
     delivery::capture_active_target_async,
+    diagnostics,
     dictation::finish_dictation,
     jobs::{
         AppState, audio_error_response, clear_per_job_context, error_response, snapshot_job_config,
@@ -68,6 +72,115 @@ pub(crate) async fn bench_dictation(
         true,
     )
     .await
+}
+
+pub(crate) async fn diagnostics_benchmark(
+    request_id: String,
+    state: &AppState,
+    audio_path: std::path::PathBuf,
+) -> Response {
+    if try_begin_job(state, None, JobState::Transcribing)
+        .await
+        .is_err()
+    {
+        return state_error(request_id, state, "busy", "Skald is busy").await;
+    }
+    let config = Config::load_or_default().unwrap_or_default();
+    let recording = match audio::recording_from_existing_wav(
+        &audio_path,
+        &config.audio.gates,
+        config.audio.target_sample_rate,
+    ) {
+        Ok(recording) => recording,
+        Err(error) => {
+            let status = update_state(state, None, JobState::Idle).await;
+            return error_response(
+                request_id,
+                "bench_audio_invalid",
+                &error.to_string(),
+                Some(status),
+            );
+        }
+    };
+    let started = Instant::now();
+    let context = diagnostics::context(&config, acceleration_backend());
+    let mut record = diagnostics::empty_record(DiagnosticSource::Benchmark, context);
+    record.timings.recording_duration_ms = Measurement::value(recording.duration_ms);
+    record.timings.audio_duration_ms = Measurement::value(recording.duration_ms);
+    match state.asr.transcribe(recording.wav_path).await {
+        Ok((_transcript, benchmark)) => {
+            record.timings = TimingMetrics {
+                recording_duration_ms: Measurement::value(recording.duration_ms),
+                stop_to_finalization_ms: Measurement::value(
+                    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                ),
+                model_load_ms: Measurement::value(benchmark.model_load_ms),
+                asr_inference_ms: Measurement::value(benchmark.transcribe_ms),
+                audio_duration_ms: Measurement::value(benchmark.audio_duration_ms),
+                asr_real_time_factor_milli: if benchmark.audio_duration_ms == 0 {
+                    Measurement::Unavailable
+                } else {
+                    Measurement::value(
+                        benchmark
+                            .transcribe_ms
+                            .saturating_mul(1_000)
+                            .saturating_div(benchmark.audio_duration_ms),
+                    )
+                },
+                end_to_end_ms: Measurement::value(
+                    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                ),
+                ..TimingMetrics::default()
+            };
+            record.preview = PreviewMetrics {
+                configured_enabled: config.preview.enabled,
+                effective_enabled: config.preview_enabled_effective(),
+                inference_ms: Measurement::NotAttempted,
+            };
+        }
+        Err(error) => {
+            record.outcome = DiagnosticOutcome {
+                status: "failed".into(),
+                error_code: Some("asr_error".into()),
+            };
+            record.timings.stop_to_finalization_ms =
+                Measurement::value(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+            record.timings.end_to_end_ms =
+                Measurement::value(started.elapsed().as_millis().try_into().unwrap_or(u64::MAX));
+            record.timings.asr_inference_ms = Measurement::failed("asr_error");
+            tracing::warn!(%error, "diagnostics benchmark ASR failed");
+        }
+    }
+    let enabled = state.diagnostics.lock().await.enabled();
+    if enabled {
+        diagnostics::record(state, record).await;
+    }
+    let snapshot = state.diagnostics.lock().await.snapshot();
+    let status = update_state(state, None, JobState::Idle).await;
+    Response {
+        protocol_version: PROTOCOL_VERSION,
+        request_id,
+        ok: true,
+        status: Some(status),
+        recording: None,
+        transcript: None,
+        benchmark: None,
+        error: None,
+        session_environment: None,
+        cleaned_text: None,
+        cleanup_ms: None,
+        dictation: None,
+        model_bench_results: None,
+        diagnostics: Some(snapshot),
+    }
+}
+
+fn acceleration_backend() -> &'static str {
+    if cfg!(feature = "asr-whisper-rs-cuda") {
+        "cuda"
+    } else {
+        "cpu"
+    }
 }
 
 pub(crate) async fn setup_record(
@@ -231,5 +344,6 @@ pub(crate) async fn bench_model_compare(
         cleanup_ms: None,
         dictation: None,
         model_bench_results: Some(results),
+        diagnostics: None,
     }
 }

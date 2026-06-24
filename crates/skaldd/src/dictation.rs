@@ -3,6 +3,10 @@ use std::{fs, sync::Arc, time::Instant};
 use skald_core::{
     cleanup::{CleanupOverride, should_run_cleanup_with_voice_style},
     config::{CleanupConfig, Config, PathsConfig, SecretsConfig, VoiceCommandsConfig},
+    diagnostics::{
+        CleanupMetrics, DiagnosticContext, DiagnosticOutcome, DiagnosticSource, InsertionMetrics,
+        Measurement, PerformanceRecord, PreviewMetrics, TimingMetrics,
+    },
     protocol::{
         AsrBenchmark, AudioRecording, DaemonStatus, DictationResult, Event, JobId, JobState,
         ModelState, PROTOCOL_VERSION, PublicDictationResult, Response, Transcript,
@@ -13,6 +17,7 @@ use tracing::warn;
 use crate::{
     asr, cleanup,
     delivery::{capture_active_target_async, deliver_text_to_target, prefer_clipboard_for_target},
+    diagnostics,
     jobs::{
         AppState, CancelDecision, StopDecision, ToggleDecision, audio_error_response,
         cancel_decision, clear_per_job_context, data_response, data_response_with, elapsed_ms,
@@ -259,6 +264,7 @@ pub(crate) async fn finish_dictation(
     attempt_paste: bool,
     retain_audio_file: bool,
 ) -> Response {
+    let diagnostics_enabled = state.diagnostics.lock().await.enabled();
     let _audio_cleanup = TemporaryAudio::new(
         recording.job_id.clone(),
         recording.wav_path.clone(),
@@ -276,6 +282,20 @@ pub(crate) async fn finish_dictation(
         }
         clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
+        if diagnostics_enabled {
+            record_failure_diagnostics(
+                state,
+                &recording,
+                DiagnosticSource::Dictation,
+                started,
+                "no_speech",
+                diagnostics::context(
+                    &Config::load_or_default().unwrap_or_default(),
+                    acceleration_backend(),
+                ),
+            )
+            .await;
+        }
         return error_response(
             request_id,
             "no_speech",
@@ -293,7 +313,23 @@ pub(crate) async fn finish_dictation(
     .await;
     let (transcript, benchmark) = match state.asr.transcribe(recording.wav_path.clone()).await {
         Ok(result) => result,
-        Err(error) => return asr_error_response(request_id, state, error).await,
+        Err(error) => {
+            if diagnostics_enabled {
+                record_failure_diagnostics(
+                    state,
+                    &recording,
+                    DiagnosticSource::Dictation,
+                    started,
+                    "asr_error",
+                    diagnostics::context(
+                        &Config::load_or_default().unwrap_or_default(),
+                        acceleration_backend(),
+                    ),
+                )
+                .await;
+            }
+            return asr_error_response(request_id, state, error).await;
+        }
     };
     update_model_state(state, ModelState::Ready).await;
     if transcript.text.trim().is_empty() {
@@ -302,6 +338,20 @@ pub(crate) async fn finish_dictation(
         }
         clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
+        if diagnostics_enabled {
+            record_failure_diagnostics(
+                state,
+                &recording,
+                DiagnosticSource::Dictation,
+                started,
+                "empty_transcript",
+                diagnostics::context(
+                    &Config::load_or_default().unwrap_or_default(),
+                    acceleration_backend(),
+                ),
+            )
+            .await;
+        }
         return error_response(
             request_id,
             "empty_transcript",
@@ -324,6 +374,10 @@ pub(crate) async fn finish_dictation(
     let secrets_config = job_snapshot.secrets;
     let cleanup_enabled = job_snapshot.cleanup_enabled;
     let voice_commands_config = job_snapshot.voice_commands;
+    let diagnostic_context = diagnostics::context_from_asr(
+        &Config::load_or_default().unwrap_or_default().asr,
+        acceleration_backend(),
+    );
     let prefer_clipboard_only = active_app_profile
         .as_ref()
         .and_then(|profile| profile.injection.prefer_clipboard_only)
@@ -374,6 +428,17 @@ pub(crate) async fn finish_dictation(
     if raw_text.trim().is_empty() {
         clear_per_job_context(state).await;
         let status = update_state(state, None, JobState::Idle).await;
+        if diagnostics_enabled {
+            record_failure_diagnostics(
+                state,
+                &recording,
+                DiagnosticSource::Dictation,
+                started,
+                "empty_transcript",
+                diagnostic_context,
+            )
+            .await;
+        }
         return error_response(
             request_id,
             "empty_transcript",
@@ -415,6 +480,17 @@ pub(crate) async fn finish_dictation(
                     cleanup::failed_fallback_outcome(raw_text, elapsed_ms(cleanup_started))
                 } else {
                     let status = update_state(state, None, JobState::Idle).await;
+                    if diagnostics_enabled {
+                        record_cleanup_failure_diagnostics(
+                            state,
+                            &recording,
+                            &benchmark,
+                            started,
+                            elapsed_ms(cleanup_started),
+                            diagnostic_context,
+                        )
+                        .await;
+                    }
                     return error_response(
                         request_id,
                         "cleanup_error",
@@ -448,13 +524,41 @@ pub(crate) async fn finish_dictation(
         Ok(delivery) => delivery,
         Err(message) => {
             let status = update_state(state, None, JobState::Idle).await;
+            if diagnostics_enabled {
+                record_failure_diagnostics(
+                    state,
+                    &recording,
+                    DiagnosticSource::Dictation,
+                    started,
+                    "clipboard_error",
+                    diagnostic_context,
+                )
+                .await;
+            }
             emit_error(state, Some(recording.job_id), "clipboard_error", &message);
             return error_response(request_id, "clipboard_error", &message, Some(status));
         }
     };
     let copied_to_clipboard = delivery.copied_to_clipboard;
-    let paste_outcome = delivery.paste_outcome;
+    let paste_outcome = delivery.paste_outcome.clone();
     let clipboard_restored = delivery.clipboard_restored;
+    if diagnostics_enabled {
+        diagnostics::record(
+            state,
+            dictation_diagnostics_record(
+                DiagnosticSource::Dictation,
+                &recording,
+                &benchmark,
+                started,
+                &cleanup_outcome,
+                &delivery,
+                diagnostic_context,
+                "ok",
+                None,
+            ),
+        )
+        .await;
+    }
 
     let result = DictationResult {
         job_id: recording.job_id.clone(),
@@ -508,6 +612,148 @@ pub(crate) async fn finish_dictation(
     )
 }
 
+fn acceleration_backend() -> &'static str {
+    if cfg!(feature = "asr-whisper-rs-cuda") {
+        "cuda"
+    } else {
+        "cpu"
+    }
+}
+
+async fn record_failure_diagnostics(
+    state: &AppState,
+    recording: &AudioRecording,
+    source: DiagnosticSource,
+    started: Instant,
+    code: &str,
+    context: DiagnosticContext,
+) {
+    let mut record = diagnostics::empty_record(source, context);
+    record.outcome = DiagnosticOutcome {
+        status: "failed".into(),
+        error_code: Some(code.into()),
+    };
+    record.timings.recording_duration_ms = Measurement::value(recording.duration_ms);
+    record.timings.stop_to_finalization_ms = Measurement::value(elapsed_ms(started));
+    record.timings.end_to_end_ms = Measurement::value(elapsed_ms(started));
+    diagnostics::record(state, record).await;
+}
+
+async fn record_cleanup_failure_diagnostics(
+    state: &AppState,
+    recording: &AudioRecording,
+    benchmark: &AsrBenchmark,
+    started: Instant,
+    cleanup_ms: u64,
+    context: DiagnosticContext,
+) {
+    let mut record = diagnostics::empty_record(DiagnosticSource::Dictation, context);
+    record.outcome = DiagnosticOutcome {
+        status: "failed".into(),
+        error_code: Some("cleanup_error".into()),
+    };
+    record.timings = timing_metrics(recording, benchmark, started);
+    record.cleanup = CleanupMetrics {
+        attempted: true,
+        failed: true,
+        duration_ms: Measurement::value(cleanup_ms),
+        ..CleanupMetrics::default()
+    };
+    diagnostics::record(state, record).await;
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dictation_diagnostics_record(
+    source: DiagnosticSource,
+    recording: &AudioRecording,
+    benchmark: &AsrBenchmark,
+    started: Instant,
+    cleanup_outcome: &cleanup::CleanupOutcome,
+    delivery: &crate::delivery::DeliveredText,
+    context: DiagnosticContext,
+    status: &str,
+    error_code: Option<String>,
+) -> PerformanceRecord {
+    let mut timings = timing_metrics(recording, benchmark, started);
+    timings.clipboard_ms = delivery
+        .clipboard_ms
+        .map_or(Measurement::NotAttempted, Measurement::value);
+    timings.paste_attempt_ms = delivery
+        .paste_attempt_ms
+        .map_or(Measurement::NotAttempted, Measurement::value);
+    timings.stop_to_clipboard_ms = delivery
+        .stop_to_clipboard_ms
+        .map_or(Measurement::NotAttempted, Measurement::value);
+    timings.stop_to_insert_ms = delivery
+        .stop_to_insert_ms
+        .map_or(Measurement::NotAttempted, Measurement::value);
+    PerformanceRecord {
+        sequence: 0,
+        source,
+        outcome: DiagnosticOutcome {
+            status: status.into(),
+            error_code,
+        },
+        timings,
+        cleanup: CleanupMetrics {
+            attempted: cleanup_outcome.used || cleanup_outcome.failed,
+            used: cleanup_outcome.used,
+            failed: cleanup_outcome.failed,
+            duration_ms: if cleanup_outcome.used || cleanup_outcome.failed {
+                Measurement::value(cleanup_outcome.cleanup_ms)
+            } else {
+                Measurement::NotAttempted
+            },
+            timeout: false,
+            retry_count: 0,
+            fallback_to_raw: cleanup_outcome.failed,
+        },
+        insertion: InsertionMetrics {
+            copied_to_clipboard: delivery.copied_to_clipboard,
+            paste_attempted: delivery.paste_outcome.paste_attempted,
+            paste_succeeded: delivery.paste_outcome.paste_succeeded,
+            clipboard_restored: delivery.clipboard_restored,
+            outcome: if delivery.paste_outcome.paste_succeeded {
+                "pasted".into()
+            } else if delivery.copied_to_clipboard {
+                "clipboard_only".into()
+            } else {
+                "not_copied".into()
+            },
+            warning_code: delivery.paste_outcome.warning_code.map(str::to_owned),
+        },
+        preview: PreviewMetrics::default(),
+        resources: diagnostics::resources(),
+        context,
+    }
+}
+
+fn timing_metrics(
+    recording: &AudioRecording,
+    benchmark: &AsrBenchmark,
+    started: Instant,
+) -> TimingMetrics {
+    TimingMetrics {
+        recording_duration_ms: Measurement::value(recording.duration_ms),
+        stop_to_finalization_ms: Measurement::value(elapsed_ms(started)),
+        model_load_ms: Measurement::value(benchmark.model_load_ms),
+        asr_inference_ms: Measurement::value(benchmark.transcribe_ms),
+        audio_duration_ms: Measurement::value(benchmark.audio_duration_ms),
+        asr_real_time_factor_milli: if benchmark.audio_duration_ms == 0 {
+            Measurement::Unavailable
+        } else {
+            Measurement::value(
+                benchmark
+                    .transcribe_ms
+                    .saturating_mul(1_000)
+                    .saturating_div(benchmark.audio_duration_ms),
+            )
+        },
+        end_to_end_ms: Measurement::value(elapsed_ms(started)),
+        ..TimingMetrics::default()
+    }
+}
+
 pub(crate) async fn test_openrouter(request_id: String, state: &AppState) -> Response {
     let (cleanup_config, paths_config, secrets_config, _, _) = reload_job_config();
     if cleanup_config.provider != "openrouter" {
@@ -553,6 +799,7 @@ pub(crate) async fn test_openrouter(request_id: String, state: &AppState) -> Res
                 cleanup_ms: Some(outcome.cleanup_ms),
                 dictation: None,
                 model_bench_results: None,
+                diagnostics: None,
             }
         }
         Err(error) => {
@@ -617,6 +864,7 @@ pub(crate) async fn cleanup_preview(
                 cleanup_ms: Some(outcome.cleanup_ms),
                 dictation: None,
                 model_bench_results: None,
+                diagnostics: None,
             }
         }
         Err(error) => {
@@ -892,6 +1140,7 @@ pub(crate) async fn template_preview(
                 cleanup_ms: Some(outcome.extract_ms),
                 dictation: None,
                 model_bench_results: None,
+                diagnostics: None,
             }
         }
         Err(error) => {

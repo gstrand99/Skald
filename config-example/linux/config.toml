@@ -100,6 +100,12 @@ skip_if_word_count_below = 5
 # To enable: skald cleanup enable openrouter
 # (sets provider = "openrouter" and leaves model as above)
 
+[diagnostics]
+# Local performance diagnostics are disabled by default.
+# When enabled, recent redacted timing/resource records stay in bounded daemon memory.
+enabled = false
+max_records = 50
+
 [secrets]
 # API keys are not stored in config.toml. Use:
 #   skald secrets set openrouter
