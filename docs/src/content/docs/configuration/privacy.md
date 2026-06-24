@@ -27,6 +27,7 @@ log_transcripts = false
 | `store_raw_transcript` | boolean | `false` | **Reserved / not implemented.** Must stay `false`; validation rejects `true`. |
 | `store_cleaned_transcript` | boolean | `false` | **Reserved / not implemented.** Must stay `false`; validation rejects `true`. |
 | `log_transcripts` | boolean | `false` | When true, daemon debug logs may include transcript text. **Keep false** unless debugging in a controlled environment. |
+| `emit_transcript_in_events` | boolean | `false` | When true, daemon IPC events may include transcript text. **Keep false** for privacy-safe defaults. |
 
 ## Doctor and warnings
 

@@ -64,14 +64,26 @@ rollback, CPU and CUDA doctor output, service restart, microphone capture, final
 transcription, clipboard and safe-paste fallback, overlay modes, tray behavior,
 cleanup disabled by default, desktop matrix notes, and artifact privacy checks.
 
-## CI
+For Linux 1.0, the [Desktop matrix](/linux/desktop-matrix/) records Hyprland
+Wayland as the only validated session. Complete the checklist on that target
+before tagging.
 
-The release workflow runs on `v*` tags. It runs `just check`, builds the
-CPU-safe archive, smoke-tests the extracted archive, generates checksums, signs
-when the GPG release key is available, and creates a draft GitHub release.
+## Publish manually
 
-CUDA publishing is a manual or dedicated-runner gate. The workflow has a CUDA
-job for a self-hosted Linux CUDA runner and will not publish a CPU build under a
-CUDA artifact name.
+Releases are built and published manually from a maintainer workstation. There is
+no GitHub Actions release workflow.
+
+1. Merge to `main` and tag `vX.Y.Z` matching `workspace.package.version`.
+2. Run `just check`.
+3. Run `just release-archives`, `just release-smoke`, and `just release-checksums`.
+4. Sign with `just release-sign` when GPG keys are available.
+5. Run `just release-checklist` and complete manual validation.
+6. Upload archives, manifests, and signatures to GitHub Releases with
+   `scripts/release-notes` output.
+7. Deploy docs with `just docs-deploy` when site content changed.
+
+CUDA archives require a CUDA-enabled `skaldd` build on a suitable host. Build and
+smoke-test the CUDA archive separately; do not publish a CPU build under a CUDA
+artifact name.
 
 Package-manager formats are deferred until archive releases are reliable.

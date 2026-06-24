@@ -7,6 +7,10 @@ Recorded on the primary development machine (Ryzen 5900X-class, RTX 3070 Ti,
 Hyprland Wayland, CUDA `skaldd` build, `power-user-nvidia` profile, warm ASR
 model).
 
+CPU-safe (`cpu-safe` profile) numbers are not published here yet. Run the
+commands in [Re-run locally](#re-run-locally) on a CPU-only archive build and
+add a section before tagging if you ship CPU-safe as the primary artifact.
+
 ## Fixtures
 
 | Fixture | Duration | Notes |
