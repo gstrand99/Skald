@@ -73,14 +73,20 @@ before tagging.
 Releases are built and published manually from a maintainer workstation. There is
 no GitHub Actions release workflow.
 
-1. Merge to `main` and tag `vX.Y.Z` matching `workspace.package.version`.
-2. Run `just check`.
-3. Run `just release-archives`, `just release-smoke`, and `just release-checksums`.
-4. Sign with `just release-sign` when GPG keys are available.
-5. Run `just release-checklist` and complete manual validation.
-6. Upload archives, manifests, and signatures to GitHub Releases with
+Issue branches merge into `dev`. `main` is release-only: the normal path into
+`main` is a pull request from `dev` to `main`, and every merge to `main` is
+released.
+
+1. Confirm `dev` with `just release-ready`.
+2. Open and merge the release pull request from `dev` to `main`.
+3. Tag `vX.Y.Z` on `main`, matching `workspace.package.version`.
+4. Run `just release-archives`, `just release-smoke`, and `just release-checksums`.
+5. Sign with `just release-sign` when GPG keys are available.
+6. Run `just release-checklist` and complete manual validation.
+7. Upload archives, manifests, and signatures to GitHub Releases with
    `scripts/release-notes` output.
-7. Deploy docs with `just docs-deploy` when site content changed.
+8. Deploy docs with `just docs-deploy` when site content changed.
+9. If any release-only commits were made on `main`, merge `main` back into `dev`.
 
 CUDA archives require a CUDA-enabled `skaldd` build on a suitable host. Build and
 smoke-test the CUDA archive separately; do not publish a CPU build under a CUDA

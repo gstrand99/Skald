@@ -259,6 +259,16 @@ release-notes previous="":
 release-checklist:
     scripts/release-checklist
 
+# Verify the dev integration branch before opening a dev-to-main release PR.
+release-ready: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch="$(git branch --show-current)"
+    if [[ "${branch}" != "dev" ]]; then
+        echo "release-ready must run on dev, not ${branch}" >&2
+        exit 1
+    fi
+
 # Print transcribe-path benchmark timings for a WAV file.
 bench-e2e wav: build
     target/debug/skald bench end-to-end {{wav}}
