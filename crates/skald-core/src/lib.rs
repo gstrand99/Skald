@@ -21,3 +21,4 @@ pub mod snippets;
 pub mod styles;
 pub mod system_probe;
 pub mod text;
+pub mod vocabulary;

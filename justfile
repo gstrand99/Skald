@@ -113,6 +113,10 @@ snippets-preview name text: build
 commands-test text: build
     target/debug/skald commands test "{{text}}"
 
+# Import personal vocabulary from a plain text or CSV file.
+vocab-import file *flags="": build
+    target/debug/skald vocab import {{flags}} {{file}}
+
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
     target/debug/skald test openrouter
