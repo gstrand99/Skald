@@ -5,7 +5,8 @@ description: Guided first-time install with model benchmarks.
 
 `skald setup` guides first-time installation: system probe, dependency hints, a
 10-second microphone fixture, model download, multi-model benchmarks, config
-generation, and optional systemd service install.
+generation, optional systemd service install, and a final ready/not-ready result
+with exact next commands.
 
 ## Quick start
 
@@ -45,9 +46,14 @@ skald setup                    # full interactive wizard
 skald setup --if-missing       # exit if already configured (used by just install)
 skald setup --force            # re-run on an existing installation
 skald setup --non-interactive  # probe-driven defaults, no prompts
-skald setup --json             # machine-readable profile and results
+skald setup --install-service  # install/refresh and restart the user service
+skald setup --json             # one machine-readable setup report
 skald setup record --seconds 10
 ```
+
+The final report prints `Ready: yes` when Skald can record, transcribe, copy to
+the clipboard, and use the selected configuration. If setup finishes but Skald is
+not ready, it exits nonzero and lists blockers plus remediation commands.
 
 ## Privacy
 
@@ -71,6 +77,7 @@ For a noninteractive profile:
 ```bash
 just setup-cpu
 just setup-nvidia  # requires NVIDIA drivers and a CUDA-enabled build
+just setup-noninteractive
 ```
 
 Validate the resulting installation with `just validate-models-cpu` or

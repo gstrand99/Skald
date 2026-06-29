@@ -299,6 +299,14 @@ dev-reload: release-cuda
 setup:
     cargo run -p skald-cli -- setup
 
+# Run first-time setup without prompts and install or refresh the user service.
+setup-noninteractive:
+    cargo run -p skald-cli -- setup --non-interactive --install-service
+
+# Print the machine-readable first-time setup report.
+setup-json:
+    cargo run -p skald-cli -- setup --json
+
 # Create the default config tree and config.toml.
 config-init:
     cargo run -p skald-cli -- config init

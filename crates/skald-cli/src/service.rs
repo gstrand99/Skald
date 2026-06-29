@@ -8,6 +8,14 @@ use skald_core::service::{self, SERVICE_UNIT_NAME};
 use skald_platform::trigger_guidance;
 
 pub fn install(log_level: &str) -> Result<()> {
+    install_inner(log_level, true)
+}
+
+pub fn install_quiet(log_level: &str) -> Result<()> {
+    install_inner(log_level, false)
+}
+
+fn install_inner(log_level: &str, print_output: bool) -> Result<()> {
     let unit_path =
         service::service_unit_path().context("systemd user config directory unavailable")?;
     let skaldd = resolve_skaldd_path()?;
@@ -17,17 +25,19 @@ pub fn install(log_level: &str) -> Result<()> {
     run_systemctl(&["daemon-reload"])?;
     run_systemctl(&["enable", SERVICE_UNIT_NAME])?;
 
-    println!("Installed {}", unit_path.display());
-    println!();
-    println!("Start the service:");
-    println!("  systemctl --user start {SERVICE_UNIT_NAME}");
-    println!("  skald service start");
-    println!();
-    println!("Check status:");
-    println!("  systemctl --user status {SERVICE_UNIT_NAME}");
-    println!("  skald service status");
-    println!();
-    print_trigger_guidance();
+    if print_output {
+        println!("Installed {}", unit_path.display());
+        println!();
+        println!("Start the service:");
+        println!("  systemctl --user start {SERVICE_UNIT_NAME}");
+        println!("  skald service start");
+        println!();
+        println!("Check status:");
+        println!("  systemctl --user status {SERVICE_UNIT_NAME}");
+        println!("  skald service status");
+        println!();
+        print_trigger_guidance();
+    }
     Ok(())
 }
 
@@ -56,6 +66,10 @@ pub fn restart() -> Result<()> {
     run_systemctl(&["restart", SERVICE_UNIT_NAME])?;
     println!("Restarted {SERVICE_UNIT_NAME}");
     Ok(())
+}
+
+pub fn restart_quiet() -> Result<()> {
+    run_systemctl(&["restart", SERVICE_UNIT_NAME])
 }
 
 pub fn stop() -> Result<()> {
