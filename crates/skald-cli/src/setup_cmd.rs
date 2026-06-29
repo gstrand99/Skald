@@ -5,12 +5,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use cpal::traits::{DeviceTrait, HostTrait};
 use dialoguer::{Confirm, Select};
 use indicatif::{ProgressBar, ProgressStyle};
+use serde::Serialize;
 use skald_core::{
     config::Config,
     download::{download_model, verify_model_file},
-    models::{ModelCandidate, recommended_candidates, record_managed_model},
+    models::{ModelCandidate, catalog_entry, recommended_candidates, record_managed_model},
     paths::{resolve_model_dir, scaffold_config_layout},
     protocol::{AsrBenchCandidate, Command},
     service::SERVICE_UNIT_NAME,
@@ -28,7 +30,40 @@ pub struct SetupOptions {
     pub if_missing: bool,
     pub force: bool,
     pub non_interactive: bool,
+    pub install_service: bool,
     pub json: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct SetupReport {
+    ready: bool,
+    profile: SystemProfile,
+    dependency_report: skald_core::system_probe::DependencyReport,
+    selection: SetupSelection,
+    service: SetupServiceReport,
+    readiness: SetupReadinessReport,
+    next_commands: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
+struct SetupServiceReport {
+    requested: bool,
+    installed_or_refreshed: bool,
+    restarted: bool,
+    daemon_was_running: bool,
+}
+
+#[derive(Debug, Serialize, Default)]
+struct SetupReadinessReport {
+    blockers: Vec<String>,
+    warnings: Vec<String>,
+}
+
+impl SetupReadinessReport {
+    fn ready(&self) -> bool {
+        self.blockers.is_empty()
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -67,15 +102,7 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     let cuda_build = detect_cuda_build().await;
     profile.cuda_daemon_build = cuda_build;
 
-    if options.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "profile": profile,
-                "cuda_build": cuda_build,
-            }))?
-        );
-    } else {
+    if !options.json {
         print_profile(&profile, cuda_build);
     }
 
@@ -130,7 +157,13 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     let daemon_was_running = daemon_guard.child.is_none();
 
     let fixture = Config::ensure_setup_fixture_dir(&config.paths)?;
-    record_fixture(RECORD_SECONDS, &fixture, options.non_interactive).await?;
+    record_fixture(
+        RECORD_SECONDS,
+        &fixture,
+        options.non_interactive,
+        options.json,
+    )
+    .await?;
 
     let cuda_ok = cuda_build == Some(true);
     let mut candidates = recommended_candidates(&config.paths, &profile, cuda_ok, preview_enabled);
@@ -146,9 +179,7 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     }
 
     let bench_results = benchmark_candidates(&fixture, &candidates).await?;
-    if options.json {
-        println!("{}", serde_json::to_string_pretty(&bench_results)?);
-    } else {
+    if !options.json {
         print_bench_table(&bench_results);
     }
 
@@ -215,21 +246,38 @@ pub async fn run(options: SetupOptions) -> Result<()> {
     final_config.save()?;
     mark_setup_complete(&final_config.paths, &selection)?;
 
-    let mut service_action_taken = false;
-    if !options.non_interactive {
+    let mut service = SetupServiceReport {
+        requested: options.install_service,
+        installed_or_refreshed: false,
+        restarted: false,
+        daemon_was_running,
+    };
+    if options.install_service {
+        if options.json {
+            service::install_quiet(&final_config.daemon.log_level)?;
+            service::restart_quiet()?;
+        } else {
+            service::install(&final_config.daemon.log_level)?;
+            service::restart()?;
+        }
+        service.installed_or_refreshed = true;
+        service.restarted = true;
+    } else if !options.non_interactive {
         let install_service = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
             .with_prompt("Install the systemd user service for skaldd?")
             .default(true)
             .interact()?;
+        service.requested = install_service;
         if install_service {
             service::install(&final_config.daemon.log_level)?;
             let restart_now = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
                 .with_prompt("Start or restart the skaldd service now?")
                 .default(true)
                 .interact()?;
+            service.installed_or_refreshed = true;
             if restart_now {
                 service::restart()?;
-                service_action_taken = true;
+                service.restarted = true;
             }
         }
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
@@ -244,20 +292,178 @@ pub async fn run(options: SetupOptions) -> Result<()> {
         }
     }
 
-    if daemon_was_running && !service_action_taken {
+    if daemon_was_running && !service.restarted {
         print_daemon_restart_warning();
     }
 
+    let readiness = build_readiness_report(&final_config, &selection, &deps, &service).await;
+    let next_commands = next_commands(&readiness, &service);
+    let report = SetupReport {
+        ready: readiness.ready(),
+        profile,
+        dependency_report: deps,
+        selection,
+        service,
+        readiness,
+        next_commands,
+    };
+
     if options.json {
-        println!("{}", serde_json::to_string_pretty(&selection)?);
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("\nSetup complete.");
-        println!("ASR model: {}", selection.asr_model_id);
+        print_setup_report(&report);
+        println!("ASR model: {}", report.selection.asr_model_id);
         println!("Config: {}", Config::path()?.display());
-        println!("Run `skald doctor` to verify the installation.");
+    }
+
+    if !report.ready {
+        bail!("setup finished but Skald is not ready");
     }
 
     Ok(())
+}
+
+async fn build_readiness_report(
+    config: &Config,
+    selection: &SetupSelection,
+    deps: &skald_core::system_probe::DependencyReport,
+    service: &SetupServiceReport,
+) -> SetupReadinessReport {
+    let mut report = SetupReadinessReport::default();
+    if config.validate().is_err() {
+        report.blockers.push("config.toml is invalid".into());
+    }
+    if category_unavailable(deps, "audio") {
+        report
+            .blockers
+            .push("PipeWire or PulseAudio tooling is unavailable".into());
+    }
+    if category_unavailable(deps, "clipboard") {
+        report
+            .blockers
+            .push("clipboard tooling is unavailable".into());
+    }
+    if !audio_input_ready() {
+        report
+            .blockers
+            .push("no usable default microphone input was detected".into());
+    }
+    let model_path = skald_core::paths::expand_home(&config.asr.model_path);
+    if !model_path.is_file() {
+        report.blockers.push(format!(
+            "selected ASR model is missing: {}",
+            model_path.display()
+        ));
+    } else if let Some(entry) = catalog_entry(&selection.asr_model_id)
+        && verify_model_file(&model_path, entry.expected_size, entry.sha256)
+            .await
+            .is_err()
+    {
+        report.blockers.push(format!(
+            "selected ASR model failed verification: {}",
+            selection.asr_model_id
+        ));
+    }
+    let paste = skald_platform::paste_report();
+    if !paste.clipboard_available {
+        report
+            .blockers
+            .push("clipboard copy is unavailable; install wl-clipboard or xclip".into());
+    }
+    if !paste.paste_available {
+        report.warnings.push(format!(
+            "paste injection unavailable; Skald will leave text on the clipboard ({})",
+            paste.reason
+        ));
+    }
+    if !paste.target_detection_available {
+        report.warnings.push(
+            "active target detection is unavailable; paste may fall back to clipboard-only".into(),
+        );
+    }
+    if config.cleanup.enabled {
+        let secrets = skald_core::secrets::secret_status(&config.secrets);
+        report
+            .warnings
+            .push("cleanup is enabled; transcript text is sent to the configured provider".into());
+        if !secrets.openrouter_configured {
+            report
+                .blockers
+                .push("OpenRouter cleanup is enabled but no API key is configured".into());
+        }
+    }
+    if !service.restarted && !service.daemon_was_running {
+        report
+            .blockers
+            .push("skaldd will not be running after setup exits".into());
+    } else if !service.restarted {
+        report
+            .warnings
+            .push("start or restart skaldd before using the new setup".into());
+    }
+    report
+}
+
+fn category_unavailable(deps: &skald_core::system_probe::DependencyReport, category: &str) -> bool {
+    let mut matching = deps
+        .checks
+        .iter()
+        .filter(|check| check.category == category);
+    matching.clone().next().is_some() && matching.all(|check| !check.available)
+}
+
+fn audio_input_ready() -> bool {
+    let host = cpal::default_host();
+    host.default_input_device()
+        .and_then(|device| device.default_input_config().ok())
+        .is_some()
+}
+
+fn next_commands(report: &SetupReadinessReport, service: &SetupServiceReport) -> Vec<String> {
+    let mut commands = Vec::new();
+    if report.blockers.iter().any(|blocker| {
+        blocker.contains("ASR model") || blocker.contains("model failed verification")
+    }) {
+        commands.push("skald models recommend".into());
+        commands.push("skald models install small.en --select".into());
+    }
+    if report
+        .blockers
+        .iter()
+        .any(|blocker| blocker.contains("OpenRouter"))
+    {
+        commands.push("skald secrets set openrouter".into());
+    }
+    if !service.restarted {
+        commands.push("skald service install".into());
+        commands.push("skald service start".into());
+    }
+    commands.push("skald doctor".into());
+    commands.dedup();
+    commands
+}
+
+fn print_setup_report(report: &SetupReport) {
+    println!("\nSetup complete.");
+    println!("Ready: {}", if report.ready { "yes" } else { "no" });
+    if !report.readiness.blockers.is_empty() {
+        println!("Blockers:");
+        for blocker in &report.readiness.blockers {
+            println!("  - {blocker}");
+        }
+    }
+    if !report.readiness.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &report.readiness.warnings {
+            println!("  - {warning}");
+        }
+    }
+    if !report.next_commands.is_empty() {
+        println!("Next commands:");
+        for command in &report.next_commands {
+            println!("  {command}");
+        }
+    }
 }
 
 fn print_daemon_restart_warning() {
@@ -356,7 +562,12 @@ fn which_skaldd() -> Result<PathBuf> {
     ))
 }
 
-async fn record_fixture(seconds: u64, fixture: &Path, non_interactive: bool) -> Result<()> {
+async fn record_fixture(
+    seconds: u64,
+    fixture: &Path,
+    non_interactive: bool,
+    quiet: bool,
+) -> Result<()> {
     if fixture.is_file() && non_interactive {
         return Ok(());
     }
@@ -384,7 +595,7 @@ async fn record_fixture(seconds: u64, fixture: &Path, non_interactive: bool) -> 
         print_response(&response)?;
         bail!("setup recording failed");
     }
-    if let Some(recording) = &response.recording {
+    if !quiet && let Some(recording) = &response.recording {
         println!(
             "Saved setup fixture ({} ms, rms {:.4}) to {}",
             recording.duration_ms,
@@ -544,5 +755,86 @@ pub async fn run_record(seconds: u64) -> Result<()> {
     scaffold_config_layout(&config.paths)?;
     let fixture = setup_fixture_path(&config.paths);
     let _daemon = ensure_daemon().await?;
-    record_fixture(seconds, &fixture, false).await
+    record_fixture(seconds, &fixture, false, false).await
+}
+
+#[cfg(test)]
+mod tests {
+    use skald_core::system_probe::{DependencyCheck, DependencyReport};
+
+    use super::*;
+
+    fn dep(name: &str, category: &str, available: bool) -> DependencyCheck {
+        DependencyCheck {
+            name: name.into(),
+            available,
+            category: category.into(),
+            install_hint: None,
+        }
+    }
+
+    #[test]
+    fn category_unavailable_requires_all_matching_checks_to_be_missing() {
+        let deps = DependencyReport {
+            checks: vec![
+                dep("wl-clipboard", "clipboard", false),
+                dep("xclip", "clipboard", true),
+            ],
+            missing: vec!["wl-clipboard".into()],
+        };
+
+        assert!(!category_unavailable(&deps, "clipboard"));
+    }
+
+    #[test]
+    fn category_unavailable_is_true_when_every_matching_check_is_missing() {
+        let deps = DependencyReport {
+            checks: vec![
+                dep("wl-clipboard", "clipboard", false),
+                dep("xclip", "clipboard", false),
+            ],
+            missing: vec!["wl-clipboard".into(), "xclip".into()],
+        };
+
+        assert!(category_unavailable(&deps, "clipboard"));
+    }
+
+    #[test]
+    fn next_commands_include_service_and_doctor_when_daemon_not_restarted() {
+        let readiness = SetupReadinessReport::default();
+        let service = SetupServiceReport {
+            requested: false,
+            installed_or_refreshed: false,
+            restarted: false,
+            daemon_was_running: false,
+        };
+
+        assert_eq!(
+            next_commands(&readiness, &service),
+            vec![
+                "skald service install",
+                "skald service start",
+                "skald doctor"
+            ]
+        );
+    }
+
+    #[test]
+    fn next_commands_include_openrouter_secret_remediation() {
+        let readiness = SetupReadinessReport {
+            blockers: vec!["OpenRouter cleanup is enabled but no API key is configured".into()],
+            warnings: Vec::new(),
+        };
+        let service = SetupServiceReport {
+            requested: true,
+            installed_or_refreshed: true,
+            restarted: true,
+            daemon_was_running: false,
+        };
+
+        assert_eq!(
+            next_commands(&readiness, &service),
+            vec!["skald secrets set openrouter", "skald doctor"]
+        );
+    }
 }

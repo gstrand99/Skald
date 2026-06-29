@@ -120,6 +120,9 @@ enum Commands {
         /// Run without prompts; requires `--force` to overwrite an existing config.
         #[arg(long)]
         non_interactive: bool,
+        /// Install or refresh the systemd user service without prompting.
+        #[arg(long)]
+        install_service: bool,
         #[arg(long)]
         json: bool,
         #[command(subcommand)]
@@ -449,6 +452,7 @@ async fn main() -> Result<()> {
             if_missing,
             force,
             non_interactive,
+            install_service,
             json,
             command,
         } => match command {
@@ -458,6 +462,7 @@ async fn main() -> Result<()> {
                     if_missing,
                     force,
                     non_interactive,
+                    install_service,
                     json,
                 })
                 .await?;
