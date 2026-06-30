@@ -47,7 +47,13 @@ of running ASR.
 
 - Increase `min_rms_energy` or `min_peak_energy` in noisy environments to reduce false triggers.
 - Decrease them if legitimate speech is rejected (`skald doctor` and failed toggles with `no_speech`).
+- Run `skald calibrate mic` to measure ambient microphone noise and print recommended gate values.
+- Run `skald calibrate mic --apply` only when you want Skald to write the recommended gate values to config.
 - Setup wizard recording uses the same gates as normal dictation.
+
+Recalibrate after changing microphones, input gain, room noise, desk position, or audio backend
+settings. Calibration records a short ambient sample without starting a dictation job and does not
+write captured audio to disk.
 
 ## Notes
 
