@@ -167,6 +167,14 @@ immediately. Model commands support `--json`.
 | `skald diagnostics benchmark FILE` | Run a redacted diagnostics benchmark |
 | `skald diagnostics benchmark FILE --json` | Machine-readable benchmark output |
 | `skald diagnostics clear` | Clear stored performance diagnostics |
+| `skald diagnostics bundle` | Write a local privacy-redacted support bundle directory |
+| `skald diagnostics bundle --output DIR` | Write the support bundle to a specific directory |
+
+The support bundle includes build info, redacted config shape, doctor output,
+service status, recent daemon logs with redaction, environment and dependency
+probes, model metadata, and desktop capability info. It excludes audio,
+transcripts, API keys, model weights, clipboard contents, and user documents by
+default. Inspect every file in the printed bundle directory before sharing it.
 
 ## Cleanup and secrets
 
