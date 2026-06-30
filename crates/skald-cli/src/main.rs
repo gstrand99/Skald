@@ -11,7 +11,7 @@ mod styles_cmd;
 use std::{io::Write, time::Duration};
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
@@ -24,6 +24,7 @@ use skald_core::{
     protocol::{Command, Event, EventKind, JobState, ModelState, Response, SessionEnvironment},
     runtime::{runtime_dir_for, socket_path_for, socket_permissions_ok, verify_mode},
     secrets, snippets, styles,
+    vocabulary::{VocabularyImportFormat, VocabularyImportMode, VocabularyImportOptions},
 };
 use skald_platform::{SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance};
 use tokio::{io::BufReader, net::UnixStream};
@@ -291,10 +292,23 @@ enum VocabCommands {
     Test {
         text: String,
     },
+    Import {
+        file: std::path::PathBuf,
+        #[arg(long, value_enum, default_value_t = VocabImportFormatArg::PlainText)]
+        format: VocabImportFormatArg,
+        #[arg(long)]
+        replace: bool,
+    },
     Add {
         #[command(subcommand)]
         command: VocabAddCommands,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum VocabImportFormatArg {
+    PlainText,
+    Csv,
 }
 
 #[derive(Debug, Subcommand)]
@@ -554,6 +568,55 @@ fn vocab(command: VocabCommands) -> Result<()> {
         VocabCommands::Test { text } => {
             let output = skald_core::text::apply_vocabulary_replacements(&text, &config.vocabulary);
             println!("{output}");
+        }
+        VocabCommands::Import {
+            file,
+            format,
+            replace,
+        } => {
+            let input = std::fs::read_to_string(&file)
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            let report = skald_core::vocabulary::import_vocabulary(
+                &mut config.vocabulary,
+                &input,
+                VocabularyImportOptions {
+                    format: match format {
+                        VocabImportFormatArg::PlainText => VocabularyImportFormat::PlainText,
+                        VocabImportFormatArg::Csv => VocabularyImportFormat::Csv,
+                    },
+                    mode: if replace {
+                        VocabularyImportMode::Replace
+                    } else {
+                        VocabularyImportMode::Merge
+                    },
+                },
+            )?;
+            config.validate()?;
+            let path = config.save()?;
+            println!("Imported vocabulary from {}", file.display());
+            if replace {
+                println!(
+                    "Replaced {} phrases and {} replacements",
+                    report.phrases_replaced, report.replacements_replaced
+                );
+            }
+            println!(
+                "Added {} phrases and {} replacements",
+                report.phrases_added, report.replacements_added
+            );
+            if !report.duplicates.is_empty() {
+                println!("Skipped duplicates:");
+                for issue in &report.duplicates {
+                    println!("  line {}: {}", issue.line, issue.message);
+                }
+            }
+            if !report.invalid_rows.is_empty() {
+                println!("Invalid rows:");
+                for issue in &report.invalid_rows {
+                    println!("  line {}: {}", issue.line, issue.message);
+                }
+            }
+            println!("Saved {}", path.display());
         }
         VocabCommands::Add { command } => {
             match command {

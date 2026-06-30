@@ -126,6 +126,7 @@ immediately. Model commands support `--json`.
 |---------|-------------|
 | `skald vocab list` | List configured phrases and replacements |
 | `skald vocab test TEXT` | Show post-replacement output for sample text |
+| `skald vocab import FILE [--format plain-text\|csv] [--replace]` | Import phrases or replacements from a file |
 | `skald vocab add phrase TEXT` | Add a phrase for ASR biasing |
 | `skald vocab add replace FROM TO` | Add a post-transcription replacement |
 
