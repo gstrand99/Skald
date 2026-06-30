@@ -73,11 +73,19 @@ cargo build --workspace
 cargo test --workspace
 ```
 
-Maintainer release flow:
+Maintainer branch and release flow:
+
+- Issue branches target `dev`.
+- `main` only changes through a `dev` to `main` pull request.
+- Every merge to `main` is followed by a release.
 
 ```bash
+git switch dev
+just release-ready
+# open and merge dev -> main
 just release-archives
 just release-smoke
+just release-checksums
 just release-checklist
 ```
 

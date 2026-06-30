@@ -1,4 +1,5 @@
 mod apps_cmd;
+mod calibration_cmd;
 mod cleanup_cmd;
 mod commands_cmd;
 mod models_cmd;
@@ -8,10 +9,15 @@ mod setup_cmd;
 mod snippets_cmd;
 mod styles_cmd;
 
-use std::{io::Write, time::Duration};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
 use cpal::traits::{DeviceTrait, HostTrait};
 use serde::Serialize;
@@ -24,6 +30,7 @@ use skald_core::{
     protocol::{Command, Event, EventKind, JobState, ModelState, Response, SessionEnvironment},
     runtime::{runtime_dir_for, socket_path_for, socket_permissions_ok, verify_mode},
     secrets, snippets, styles,
+    vocabulary::{VocabularyImportFormat, VocabularyImportMode, VocabularyImportOptions},
 };
 use skald_platform::{SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance};
 use tokio::{io::BufReader, net::UnixStream};
@@ -93,6 +100,10 @@ enum Commands {
     Vocab {
         #[command(subcommand)]
         command: VocabCommands,
+    },
+    Calibrate {
+        #[command(subcommand)]
+        command: CalibrateCommands,
     },
     Record {
         #[arg(long, default_value_t = 5)]
@@ -283,6 +294,11 @@ enum DiagnosticsCommands {
         json: bool,
     },
     Clear,
+    /// Write a privacy-redacted local diagnostics bundle directory.
+    Bundle {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -291,10 +307,37 @@ enum VocabCommands {
     Test {
         text: String,
     },
+    Import {
+        file: std::path::PathBuf,
+        #[arg(long, value_enum, default_value_t = VocabImportFormatArg::PlainText)]
+        format: VocabImportFormatArg,
+        #[arg(long)]
+        replace: bool,
+    },
     Add {
         #[command(subcommand)]
         command: VocabAddCommands,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum CalibrateCommands {
+    /// Measure ambient microphone noise and recommend audio gate settings.
+    Mic {
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// Write recommended gates to config.
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum VocabImportFormatArg {
+    PlainText,
+    Csv,
 }
 
 #[derive(Debug, Subcommand)]
@@ -432,6 +475,7 @@ async fn main() -> Result<()> {
         Commands::Bench { command } => handle_bench(command).await?,
         Commands::Diagnostics { command } => diagnostics(command).await?,
         Commands::Vocab { command } => vocab(command)?,
+        Commands::Calibrate { command } => calibration_cmd::run(&command)?,
         Commands::Record {
             seconds,
             no_cleanup,
@@ -520,8 +564,229 @@ async fn diagnostics(command: DiagnosticsCommands) -> Result<()> {
                 print_response(&response)?;
             }
         }
+        DiagnosticsCommands::Bundle { output } => diagnostics_bundle(output.as_deref()).await?,
     }
     Ok(())
+}
+
+#[derive(Debug, Serialize)]
+struct BundleManifest {
+    generated_unix_seconds: u64,
+    redaction_rules: Vec<&'static str>,
+    collected_files: Vec<String>,
+    excluded: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+struct BundleEnvironment {
+    platform: skald_platform::EnvironmentReport,
+    system: skald_core::system_probe::SystemProfile,
+    dependencies: skald_core::system_probe::DependencyReport,
+}
+
+#[derive(Debug, Serialize)]
+struct BundleModels {
+    model_dir: String,
+    managed_metadata_present: bool,
+    managed_models: skald_core::models::ManagedModels,
+    configured_final_model: String,
+    configured_preview_model: String,
+}
+
+async fn diagnostics_bundle(output: Option<&Path>) -> Result<()> {
+    let config = Config::load_or_default()?;
+    let dir = output.map_or_else(default_bundle_dir, Path::to_path_buf);
+    if dir.exists() {
+        bail!("bundle output already exists: {}", dir.display());
+    }
+    fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+
+    let mut collected = Vec::new();
+    write_bundle_file(
+        &dir,
+        "README.txt",
+        "Skald diagnostics bundle\n\nInspect this directory before sharing it.\nIt is designed to exclude audio, transcripts, API keys, model weights, clipboard contents, and user documents.\nRedaction is conservative, but you should still review every file.\n",
+        &mut collected,
+    )?;
+
+    write_bundle_json(
+        &dir,
+        "version.json",
+        &build_info::build_info("none"),
+        &mut collected,
+    )?;
+
+    let config_path = Config::path()?;
+    let config_text = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| format!("# failed to read {}: {error}", config_path.display()));
+    write_bundle_file(
+        &dir,
+        "config.redacted.toml",
+        &skald_core::support_bundle::redact_config_toml(&config_text),
+        &mut collected,
+    )?;
+
+    let mut doctor_report = build_doctor_report(&config).await?;
+    doctor_report.performance_warnings = fetch_performance_warnings().await?;
+    doctor_report.suggestions = build_doctor_suggestions(&doctor_report);
+    doctor_report.remediation_commands = build_doctor_remediation(&doctor_report);
+    write_bundle_json(&dir, "doctor.json", &doctor_report, &mut collected)?;
+
+    write_bundle_json(
+        &dir,
+        "environment.json",
+        &bundle_environment(&config),
+        &mut collected,
+    )?;
+    write_bundle_json(&dir, "models.json", &bundle_models(&config), &mut collected)?;
+    let overlay = skald_platform::overlay_session_hint();
+    write_bundle_json(
+        &dir,
+        "desktop.json",
+        &serde_json::json!({
+            "environment": skald_platform::environment_report(),
+            "paste": skald_platform::paste_report(),
+            "overlay": {
+                "id": overlay.id,
+                "detail": overlay.detail,
+                "layer_shell_recommended": overlay.layer_shell_recommended,
+            },
+        }),
+        &mut collected,
+    )?;
+
+    write_bundle_file(
+        &dir,
+        "service-status.txt",
+        &skald_core::support_bundle::redact_text(&capture_command(
+            "systemctl",
+            &["--user", "status", "skaldd.service"],
+        )),
+        &mut collected,
+    )?;
+    write_bundle_file(
+        &dir,
+        "daemon-logs.redacted.txt",
+        &skald_core::support_bundle::redact_text(&capture_command(
+            "journalctl",
+            &["--user", "-u", "skaldd.service", "-n", "200", "--no-pager"],
+        )),
+        &mut collected,
+    )?;
+
+    let manifest = BundleManifest {
+        generated_unix_seconds: unix_seconds(),
+        redaction_rules: vec![
+            "TOML keys containing api_key, secret, token, password, credential, or authorization are replaced with [redacted].",
+            "Log lines labeled transcript, clipboard, dictated_text, cleaned_text, or raw_text are replaced with [redacted].",
+            "OpenRouter-style tokens, bearer tokens, and long opaque tokens in logs are replaced with [redacted].",
+        ],
+        collected_files: collected.clone(),
+        excluded: vec![
+            "audio files",
+            "raw or cleaned transcripts",
+            "API keys and secret values",
+            "model weight files",
+            "clipboard contents",
+            "user documents",
+        ],
+    };
+    write_bundle_json(&dir, "manifest.json", &manifest, &mut collected)?;
+
+    println!("Wrote diagnostics bundle: {}", dir.display());
+    println!("Collected:");
+    for file in collected {
+        println!("  {file}");
+    }
+    println!("Review every file in the bundle before sharing it.");
+    Ok(())
+}
+
+fn default_bundle_dir() -> PathBuf {
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join(format!("skald-diagnostics-{}", unix_seconds()))
+}
+
+fn unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn write_bundle_json<T: Serialize>(
+    dir: &Path,
+    name: &str,
+    value: &T,
+    collected: &mut Vec<String>,
+) -> Result<()> {
+    let content = serde_json::to_string_pretty(value)?;
+    write_bundle_file(dir, name, &content, collected)
+}
+
+fn write_bundle_file(
+    dir: &Path,
+    name: &str,
+    content: &str,
+    collected: &mut Vec<String>,
+) -> Result<()> {
+    fs::write(dir.join(name), content).with_context(|| format!("failed to write {name}"))?;
+    collected.push(name.into());
+    Ok(())
+}
+
+fn capture_command(program: &str, args: &[&str]) -> String {
+    match std::process::Command::new(program).args(args).output() {
+        Ok(output) => {
+            let mut text = String::new();
+            text.push_str("$ ");
+            text.push_str(program);
+            for arg in args {
+                text.push(' ');
+                text.push_str(arg);
+            }
+            text.push('\n');
+            text.push_str("exit_status: ");
+            text.push_str(&output.status.to_string());
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&output.stdout));
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+            text
+        }
+        Err(error) => format!("failed to run {program}: {error}\n"),
+    }
+}
+
+fn bundle_environment(config: &Config) -> BundleEnvironment {
+    let model_dir = paths::resolve_model_dir(&config.paths);
+    let profile = skald_core::system_probe::probe_system(&model_dir);
+    let dependencies = skald_core::system_probe::dependency_report(profile.distro_id.as_deref());
+    BundleEnvironment {
+        platform: skald_platform::environment_report(),
+        system: profile,
+        dependencies,
+    }
+}
+
+fn bundle_models(config: &Config) -> BundleModels {
+    let model_dir = paths::resolve_model_dir(&config.paths);
+    let managed_models = skald_core::models::load_managed_models(&model_dir).unwrap_or_default();
+    BundleModels {
+        model_dir: model_dir.display().to_string(),
+        managed_metadata_present: skald_core::models::metadata_path(&model_dir).is_file(),
+        managed_models,
+        configured_final_model: paths::expand_home(&config.asr.model_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_owned(),
+        configured_preview_model: paths::expand_home(&config.preview.effective_model_path())
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_owned(),
+    }
 }
 
 fn version(json: bool) -> Result<()> {
@@ -554,6 +819,55 @@ fn vocab(command: VocabCommands) -> Result<()> {
         VocabCommands::Test { text } => {
             let output = skald_core::text::apply_vocabulary_replacements(&text, &config.vocabulary);
             println!("{output}");
+        }
+        VocabCommands::Import {
+            file,
+            format,
+            replace,
+        } => {
+            let input = std::fs::read_to_string(&file)
+                .with_context(|| format!("failed to read {}", file.display()))?;
+            let report = skald_core::vocabulary::import_vocabulary(
+                &mut config.vocabulary,
+                &input,
+                VocabularyImportOptions {
+                    format: match format {
+                        VocabImportFormatArg::PlainText => VocabularyImportFormat::PlainText,
+                        VocabImportFormatArg::Csv => VocabularyImportFormat::Csv,
+                    },
+                    mode: if replace {
+                        VocabularyImportMode::Replace
+                    } else {
+                        VocabularyImportMode::Merge
+                    },
+                },
+            )?;
+            config.validate()?;
+            let path = config.save()?;
+            println!("Imported vocabulary from {}", file.display());
+            if replace {
+                println!(
+                    "Replaced {} phrases and {} replacements",
+                    report.phrases_replaced, report.replacements_replaced
+                );
+            }
+            println!(
+                "Added {} phrases and {} replacements",
+                report.phrases_added, report.replacements_added
+            );
+            if !report.duplicates.is_empty() {
+                println!("Skipped duplicates:");
+                for issue in &report.duplicates {
+                    println!("  line {}: {}", issue.line, issue.message);
+                }
+            }
+            if !report.invalid_rows.is_empty() {
+                println!("Invalid rows:");
+                for issue in &report.invalid_rows {
+                    println!("  line {}: {}", issue.line, issue.message);
+                }
+            }
+            println!("Saved {}", path.display());
         }
         VocabCommands::Add { command } => {
             match command {

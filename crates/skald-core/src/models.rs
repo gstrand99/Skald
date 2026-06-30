@@ -201,6 +201,105 @@ impl ModelCandidate {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRecommendation {
+    pub hardware_profile: String,
+    pub final_model_id: String,
+    pub preview_model_id: Option<String>,
+    pub asr_gpu: bool,
+    pub lifecycle_mode: String,
+    pub warm_on_daemon_start: bool,
+    pub install_commands: Vec<String>,
+    pub select_commands: Vec<String>,
+    pub tradeoffs: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[must_use]
+pub fn recommend_model_profile(
+    profile: &SystemProfile,
+    cuda_build: bool,
+    include_preview: bool,
+) -> ModelRecommendation {
+    if profile.has_nvidia_gpu && cuda_build && profile.gpu_vram_mib.unwrap_or(0) >= 2_048 {
+        return ModelRecommendation {
+            hardware_profile: "power-user-nvidia".into(),
+            final_model_id: "large-v3-turbo-q5".into(),
+            preview_model_id: include_preview.then(|| "small.en-q5".into()),
+            asr_gpu: true,
+            lifecycle_mode: "keep_warm".into(),
+            warm_on_daemon_start: true,
+            install_commands: install_commands(
+                "large-v3-turbo-q5",
+                include_preview.then_some("small.en-q5"),
+            ),
+            select_commands: select_commands(
+                "large-v3-turbo-q5",
+                include_preview.then_some("small.en-q5"),
+            ),
+            tradeoffs: vec![
+                "Fastest stop-to-text path on CUDA with the best catalog accuracy.".into(),
+                "Keeps the final model warm for low latency and uses more idle RAM/VRAM.".into(),
+                "Text preview is supported with the smaller CUDA preview model.".into(),
+            ],
+            warnings: Vec::new(),
+        };
+    }
+
+    let mut warnings = Vec::new();
+    if profile.has_nvidia_gpu && !cuda_build {
+        warnings.push("NVIDIA hardware was detected, but the daemon is not CUDA-enabled.".into());
+    } else if profile.has_nvidia_gpu && profile.gpu_vram_mib.unwrap_or(0) < 2_048 {
+        warnings.push(
+            "NVIDIA hardware was detected, but reported VRAM is below the CUDA profile threshold."
+                .into(),
+        );
+    } else if profile.ram_total_mib == 0 {
+        warnings.push("System RAM could not be detected; using CPU-safe defaults.".into());
+    }
+
+    ModelRecommendation {
+        hardware_profile: "cpu-safe".into(),
+        final_model_id: "small.en".into(),
+        preview_model_id: include_preview.then(|| "small.en".into()),
+        asr_gpu: false,
+        lifecycle_mode: "on_demand".into(),
+        warm_on_daemon_start: false,
+        install_commands: install_commands("small.en", None),
+        select_commands: select_commands("small.en", include_preview.then_some("small.en")),
+        tradeoffs: vec![
+            "Runs without CUDA and avoids GPU build requirements.".into(),
+            "Lower idle memory with on-demand loading, with slower first transcription.".into(),
+            "Good English accuracy; preview can reuse the same CPU-safe model.".into(),
+        ],
+        warnings,
+    }
+}
+
+fn install_commands(final_model_id: &str, preview_model_id: Option<&str>) -> Vec<String> {
+    let mut commands = vec![format!("skald models install {final_model_id}")];
+    if let Some(preview_model_id) = preview_model_id.filter(|id| *id != final_model_id) {
+        commands.push(format!("skald models install {preview_model_id}"));
+    }
+    commands
+}
+
+fn select_commands(final_model_id: &str, preview_model_id: Option<&str>) -> Vec<String> {
+    let mut commands = vec![format!("skald models select {final_model_id}")];
+    if let Some(preview_model_id) = preview_model_id {
+        commands.push(format!("skald models select-preview {preview_model_id}"));
+    }
+    commands.push(format!(
+        "skald config profile {}",
+        if final_model_id == "large-v3-turbo-q5" {
+            "power-user-nvidia"
+        } else {
+            "cpu-safe"
+        }
+    ));
+    commands
+}
+
 #[must_use]
 pub fn recommended_candidates(
     paths: &PathsConfig,
@@ -266,6 +365,56 @@ mod tests {
         let ids: Vec<_> = candidates.iter().map(|c| c.id).collect();
         assert!(ids.contains(&"base.en"));
         assert!(ids.contains(&"small.en"));
+    }
+
+    #[test]
+    fn cpu_profile_recommends_concrete_cpu_safe_plan() {
+        let profile = SystemProfile {
+            cpu_logical_cores: 8,
+            ram_total_mib: 16_384,
+            has_nvidia_gpu: false,
+            gpu_name: None,
+            gpu_vram_mib: None,
+            model_dir_free_mib: Some(10_000),
+            distro_id: Some("arch".into()),
+            audio_stack_available: true,
+            cuda_daemon_build: Some(false),
+        };
+        let recommendation = recommend_model_profile(&profile, false, true);
+        assert_eq!(recommendation.hardware_profile, "cpu-safe");
+        assert_eq!(recommendation.final_model_id, "small.en");
+        assert_eq!(recommendation.preview_model_id.as_deref(), Some("small.en"));
+        assert!(!recommendation.asr_gpu);
+        assert_eq!(recommendation.lifecycle_mode, "on_demand");
+        assert!(
+            recommendation
+                .select_commands
+                .contains(&"skald models select small.en".into())
+        );
+    }
+
+    #[test]
+    fn cuda_profile_recommends_power_user_plan() {
+        let profile = SystemProfile {
+            cpu_logical_cores: 24,
+            ram_total_mib: 32_768,
+            has_nvidia_gpu: true,
+            gpu_name: Some("NVIDIA GeForce RTX 3070 Ti".into()),
+            gpu_vram_mib: Some(8_192),
+            model_dir_free_mib: Some(10_000),
+            distro_id: Some("arch".into()),
+            audio_stack_available: true,
+            cuda_daemon_build: Some(true),
+        };
+        let recommendation = recommend_model_profile(&profile, true, true);
+        assert_eq!(recommendation.hardware_profile, "power-user-nvidia");
+        assert_eq!(recommendation.final_model_id, "large-v3-turbo-q5");
+        assert_eq!(
+            recommendation.preview_model_id.as_deref(),
+            Some("small.en-q5")
+        );
+        assert!(recommendation.asr_gpu);
+        assert_eq!(recommendation.lifecycle_mode, "keep_warm");
     }
 
     #[test]

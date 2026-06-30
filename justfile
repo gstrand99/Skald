@@ -15,6 +15,10 @@ daemon: build-cuda
 mic seconds="5": build
     target/debug/skald test mic --seconds {{seconds}}
 
+# Measure ambient microphone noise and recommend gate settings.
+calibrate-mic seconds="5" *flags="": build
+    target/debug/skald calibrate mic --seconds {{seconds}} {{flags}}
+
 # Start a manual recording.
 start: build
     target/debug/skald start
@@ -112,6 +116,10 @@ snippets-preview name text: build
 # Test voice command parsing for sample transcript text.
 commands-test text: build
     target/debug/skald commands test "{{text}}"
+
+# Import personal vocabulary from a plain text or CSV file.
+vocab-import file *flags="": build
+    target/debug/skald vocab import {{flags}} {{file}}
 
 # Test OpenRouter connectivity through the daemon.
 test-openrouter: build
@@ -258,6 +266,16 @@ release-notes previous="":
 # Print the manual Linux release validation checklist.
 release-checklist:
     scripts/release-checklist
+
+# Verify the dev integration branch before opening a dev-to-main release PR.
+release-ready: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch="$(git branch --show-current)"
+    if [[ "${branch}" != "dev" ]]; then
+        echo "release-ready must run on dev, not ${branch}" >&2
+        exit 1
+    fi
 
 # Print transcribe-path benchmark timings for a WAV file.
 bench-e2e wav: build

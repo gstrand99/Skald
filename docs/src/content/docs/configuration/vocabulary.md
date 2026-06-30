@@ -51,6 +51,8 @@ skald vocab list
 skald vocab test "hyper land is great"
 skald vocab add phrase "My Project"
 skald vocab add replace "open router" "OpenRouter"
+skald vocab import vocabulary.txt
+skald vocab import replacements.csv --format csv
 ```
 
 CLI edits rewrite `config.toml`. Each new transcription loads one validated
@@ -58,6 +60,40 @@ vocabulary snapshot, so phrase and replacement changes apply without restarting
 `skaldd`. An in-flight transcription keeps the snapshot it started with. If the
 edited config is invalid, the daemon logs the validation error and keeps the last
 valid vocabulary.
+
+## Bulk import
+
+Plain text imports treat each non-empty, non-comment line as a phrase:
+
+```text
+Hyprland
+OpenRouter
+Project Skald
+```
+
+CSV imports support either positional rows or a header row. One column imports a
+phrase. Two or three columns import a deterministic replacement:
+
+```csv
+from,to,case_sensitive
+hyper land,Hyprland,false
+open router,OpenRouter,false
+```
+
+Header names can use `phrase`, `text`, or `term` for phrases, and `from`, `to`,
+and `case_sensitive` for replacements. `case_sensitive` defaults to false when
+omitted.
+
+Imports merge by default and preserve existing entries. Duplicate phrases or
+replacement rows are skipped and printed with line numbers. Empty values,
+malformed CSV, and invalid `case_sensitive` values are reported with line
+context. Use `--replace` only when the imported file should become the complete
+vocabulary.
+
+Import files are read locally and are not sent to a network service. Vocabulary
+phrases may appear in local Whisper prompts, and replacement text is applied
+locally after transcription. Transcript text is sent to a cleanup provider only
+when cleanup is explicitly enabled.
 
 ## Notes
 

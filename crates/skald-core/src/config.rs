@@ -680,6 +680,7 @@ impl Config {
         collect_audio_errors(self, &mut errors);
         collect_asr_errors(self, &mut errors);
         collect_secrets_and_cleanup_errors(self, &mut errors);
+        collect_vocabulary_errors(self, &mut errors);
         collect_diagnostics_errors(self, &mut errors);
         collect_injection_and_paths_errors(self, &mut errors);
         collect_privacy_reserved_errors(self, &mut errors);
@@ -707,6 +708,55 @@ impl Config {
             ));
         }
         warnings
+    }
+}
+
+fn collect_vocabulary_errors(config: &Config, errors: &mut Vec<ConfigError>) {
+    let mut phrases = std::collections::HashSet::new();
+    for (index, phrase) in config.vocabulary.phrases.iter().enumerate() {
+        let text = phrase.text.trim();
+        if text.is_empty() {
+            push_validation(
+                errors,
+                format!("vocabulary.phrases[{index}].text cannot be empty"),
+            );
+        } else if !phrases.insert(text.to_ascii_lowercase()) {
+            push_validation(
+                errors,
+                format!("vocabulary.phrases[{index}].text duplicates an earlier phrase"),
+            );
+        }
+    }
+
+    let mut replacements = std::collections::HashSet::new();
+    for (index, replacement) in config.vocabulary.replacements.iter().enumerate() {
+        let from = replacement.from.trim();
+        let to = replacement.to.trim();
+        if from.is_empty() {
+            push_validation(
+                errors,
+                format!("vocabulary.replacements[{index}].from cannot be empty"),
+            );
+        }
+        if to.is_empty() {
+            push_validation(
+                errors,
+                format!("vocabulary.replacements[{index}].to cannot be empty"),
+            );
+        }
+        if !from.is_empty()
+            && !to.is_empty()
+            && !replacements.insert((
+                from.to_ascii_lowercase(),
+                to.to_owned(),
+                replacement.case_sensitive,
+            ))
+        {
+            push_validation(
+                errors,
+                format!("vocabulary.replacements[{index}] duplicates an earlier replacement"),
+            );
+        }
     }
 }
 

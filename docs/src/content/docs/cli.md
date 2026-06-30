@@ -61,6 +61,8 @@ See [Waybar](/linux/waybar/) and [Tray client](/linux/tray/).
 | `skald doctor` | Session, tools, models, privacy, paste report |
 | `skald doctor --json` | Machine-readable doctor output |
 | `skald doctor --include-performance` | Include performance diagnostics warnings |
+| `skald calibrate mic` | Measure ambient microphone noise and recommend gate settings |
+| `skald calibrate mic --apply` | Save recommended gate settings to config |
 
 ## Setup and service
 
@@ -117,6 +119,32 @@ See [Waybar](/linux/waybar/) and [Tray client](/linux/tray/).
 Skald never removes arbitrary model files. Cleanup is limited to files recorded
 in `managed-models.json`, and configured or loaded models are protected.
 
+`skald models recommend` is read-only. It reports detected CPU, RAM, NVIDIA/CUDA
+status, installed catalog models, current model config, one recommended final
+model, optional preview model, tradeoffs, and exact commands to install/select
+the recommendation.
+
+CPU-only example:
+
+```bash
+skald models recommend
+skald models install small.en
+skald models select small.en
+skald models select-preview small.en
+skald config profile cpu-safe
+```
+
+NVIDIA/CUDA example:
+
+```bash
+skald models recommend
+skald models install large-v3-turbo-q5
+skald models install small.en-q5
+skald models select large-v3-turbo-q5
+skald models select-preview small.en-q5
+skald config profile power-user-nvidia
+```
+
 Use `--select` or `--select-preview` during installation to configure the model
 immediately. Model commands support `--json`.
 
@@ -126,6 +154,7 @@ immediately. Model commands support `--json`.
 |---------|-------------|
 | `skald vocab list` | List configured phrases and replacements |
 | `skald vocab test TEXT` | Show post-replacement output for sample text |
+| `skald vocab import FILE [--format plain-text\|csv] [--replace]` | Import phrases or replacements from a file |
 | `skald vocab add phrase TEXT` | Add a phrase for ASR biasing |
 | `skald vocab add replace FROM TO` | Add a post-transcription replacement |
 
@@ -138,6 +167,14 @@ immediately. Model commands support `--json`.
 | `skald diagnostics benchmark FILE` | Run a redacted diagnostics benchmark |
 | `skald diagnostics benchmark FILE --json` | Machine-readable benchmark output |
 | `skald diagnostics clear` | Clear stored performance diagnostics |
+| `skald diagnostics bundle` | Write a local privacy-redacted support bundle directory |
+| `skald diagnostics bundle --output DIR` | Write the support bundle to a specific directory |
+
+The support bundle includes build info, redacted config shape, doctor output,
+service status, recent daemon logs with redaction, environment and dependency
+probes, model metadata, and desktop capability info. It excludes audio,
+transcripts, API keys, model weights, clipboard contents, and user documents by
+default. Inspect every file in the printed bundle directory before sharing it.
 
 ## Cleanup and secrets
 

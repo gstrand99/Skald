@@ -2858,7 +2858,7 @@ dependencies = [
 
 [[package]]
 name = "skald-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2877,7 +2877,7 @@ dependencies = [
 
 [[package]]
 name = "skald-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -2896,7 +2896,7 @@ dependencies = [
 
 [[package]]
 name = "skald-overlay"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -2912,7 +2912,7 @@ dependencies = [
 
 [[package]]
 name = "skald-platform"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2922,7 +2922,7 @@ dependencies = [
 
 [[package]]
 name = "skald-tray"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "ksni",
@@ -2934,7 +2934,7 @@ dependencies = [
 
 [[package]]
 name = "skaldd"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",

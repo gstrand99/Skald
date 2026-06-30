@@ -19,5 +19,7 @@ pub mod setup;
 pub mod snippet_templates;
 pub mod snippets;
 pub mod styles;
+pub mod support_bundle;
 pub mod system_probe;
 pub mod text;
+pub mod vocabulary;
