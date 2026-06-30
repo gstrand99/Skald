@@ -61,6 +61,8 @@ See [Waybar](/linux/waybar/) and [Tray client](/linux/tray/).
 | `skald doctor` | Session, tools, models, privacy, paste report |
 | `skald doctor --json` | Machine-readable doctor output |
 | `skald doctor --include-performance` | Include performance diagnostics warnings |
+| `skald calibrate mic` | Measure ambient microphone noise and recommend gate settings |
+| `skald calibrate mic --apply` | Save recommended gate settings to config |
 
 ## Setup and service
 

@@ -15,6 +15,10 @@ daemon: build-cuda
 mic seconds="5": build
     target/debug/skald test mic --seconds {{seconds}}
 
+# Measure ambient microphone noise and recommend gate settings.
+calibrate-mic seconds="5" *flags="": build
+    target/debug/skald calibrate mic --seconds {{seconds}} {{flags}}
+
 # Start a manual recording.
 start: build
     target/debug/skald start

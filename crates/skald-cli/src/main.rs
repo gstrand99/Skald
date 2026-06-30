@@ -1,4 +1,5 @@
 mod apps_cmd;
+mod calibration_cmd;
 mod cleanup_cmd;
 mod commands_cmd;
 mod models_cmd;
@@ -94,6 +95,10 @@ enum Commands {
     Vocab {
         #[command(subcommand)]
         command: VocabCommands,
+    },
+    Calibrate {
+        #[command(subcommand)]
+        command: CalibrateCommands,
     },
     Record {
         #[arg(long, default_value_t = 5)]
@@ -305,6 +310,20 @@ enum VocabCommands {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum CalibrateCommands {
+    /// Measure ambient microphone noise and recommend audio gate settings.
+    Mic {
+        #[arg(long, default_value_t = 5)]
+        seconds: u64,
+        /// Write recommended gates to config.
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum VocabImportFormatArg {
     PlainText,
@@ -446,6 +465,7 @@ async fn main() -> Result<()> {
         Commands::Bench { command } => handle_bench(command).await?,
         Commands::Diagnostics { command } => diagnostics(command).await?,
         Commands::Vocab { command } => vocab(command)?,
+        Commands::Calibrate { command } => calibration_cmd::run(&command)?,
         Commands::Record {
             seconds,
             no_cleanup,
