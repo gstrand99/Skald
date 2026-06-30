@@ -9,12 +9,13 @@ use skald_core::{
     config::Config,
     download::{download_model, verify_model_file},
     models::{
-        CATALOG, catalog_entry, load_managed_models, model_file_path, recommended_candidates,
-        record_managed_model, save_managed_models,
+        CATALOG, ModelRecommendation, catalog_entry, catalog_entry_for_path, load_managed_models,
+        model_file_path, recommend_model_profile, recommended_candidates, record_managed_model,
+        save_managed_models,
     },
     paths::{expand_home, resolve_model_dir, to_tilde},
     protocol::{Command, ModelState},
-    system_probe::probe_system,
+    system_probe::{SystemProfile, probe_system},
 };
 
 use crate::send;
@@ -203,43 +204,171 @@ async fn list(json: bool) -> Result<()> {
 }
 
 async fn recommend(json: bool) -> Result<()> {
+    let report = recommendation_report().await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_recommendation_report(&report);
+    }
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct RecommendationInstallState {
+    final_model: bool,
+    preview_model: bool,
+}
+
+#[derive(Serialize)]
+struct RecommendationConfigState {
+    final_model: Option<&'static str>,
+    preview_model: Option<&'static str>,
+    asr_gpu: bool,
+    lifecycle_mode: String,
+    warm_on_daemon_start: bool,
+}
+
+#[derive(Serialize)]
+struct RecommendationReport {
+    system: SystemProfile,
+    recommendation: ModelRecommendation,
+    installed: RecommendationInstallState,
+    current_config: RecommendationConfigState,
+}
+
+async fn recommendation_report() -> Result<RecommendationReport> {
     let config = Config::load_or_default()?;
     let model_dir = resolve_model_dir(&config.paths);
     let mut profile = probe_system(&model_dir);
     profile.cuda_daemon_build = cuda_build().await;
-    let candidates = recommended_candidates(
-        &config.paths,
-        &profile,
-        profile.cuda_daemon_build == Some(true),
-        true,
+    let recommendation =
+        recommend_model_profile(&profile, profile.cuda_daemon_build == Some(true), true);
+    let final_entry = catalog_entry(&recommendation.final_model_id)
+        .context("recommended final model is missing from catalog")?;
+    let preview_entry = recommendation
+        .preview_model_id
+        .as_deref()
+        .map(|id| catalog_entry(id).context("recommended preview model is missing from catalog"))
+        .transpose()?;
+    let final_path = model_file_path(&model_dir, final_entry);
+    let preview_path = preview_entry.map(|entry| model_file_path(&model_dir, entry));
+    let final_installed = final_path.is_file();
+    let preview_installed = recommendation
+        .preview_model_id
+        .as_deref()
+        .zip(preview_path.as_ref())
+        .is_some_and(|(_, path)| path.is_file());
+    let current_final =
+        catalog_entry_for_config_path(&model_dir, &expand_home(&config.asr.model_path));
+    let current_preview = catalog_entry_for_config_path(
+        &model_dir,
+        &expand_home(&config.preview.effective_model_path()),
     );
-    let ids: Vec<_> = candidates.iter().map(|candidate| candidate.id).collect();
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "system": profile,
-                "recommended_models": ids,
-                "final": ids.iter().find(|id| **id == "large-v3-turbo-q5").or_else(|| ids.iter().find(|id| **id == "small.en")),
-                "preview": ids.iter().find(|id| **id == "small.en-q5").or_else(|| ids.iter().find(|id| **id == "small.en")),
-            }))?
-        );
-    } else {
-        println!("Detected recommendations:");
-        for candidate in candidates {
-            let entry = candidate.entry().context("catalog entry missing")?;
-            println!(
-                "  {} — {} ({})",
-                entry.id, entry.description, entry.hardware_guidance
-            );
-        }
-        if profile.has_nvidia_gpu && profile.cuda_daemon_build != Some(true) {
-            println!(
-                "Warning: NVIDIA hardware was detected, but the running daemon is not CUDA-enabled."
-            );
+    Ok(RecommendationReport {
+        system: profile,
+        recommendation,
+        installed: RecommendationInstallState {
+            final_model: final_installed,
+            preview_model: preview_installed,
+        },
+        current_config: RecommendationConfigState {
+            final_model: current_final,
+            preview_model: current_preview,
+            asr_gpu: config.asr.gpu,
+            lifecycle_mode: config.asr.lifecycle.mode,
+            warm_on_daemon_start: config.asr.lifecycle.warm_on_daemon_start,
+        },
+    })
+}
+
+fn print_recommendation_report(report: &RecommendationReport) {
+    let recommendation = &report.recommendation;
+    println!("Recommended profile: {}", recommendation.hardware_profile);
+    println!("Final model: {}", recommendation.final_model_id);
+    println!(
+        "Preview model: {}",
+        recommendation
+            .preview_model_id
+            .as_deref()
+            .unwrap_or("disabled")
+    );
+    println!("ASR GPU: {}", recommendation.asr_gpu);
+    println!(
+        "Lifecycle: mode={}, warm_on_daemon_start={}",
+        recommendation.lifecycle_mode, recommendation.warm_on_daemon_start
+    );
+    println!();
+    print_detected_hardware(&report.system);
+    println!(
+        "Installed: final={}, preview={}",
+        yes_no(report.installed.final_model),
+        yes_no(report.installed.preview_model)
+    );
+    println!(
+        "Current config: final={}, preview={}, asr.gpu={}, lifecycle={}",
+        report
+            .current_config
+            .final_model
+            .unwrap_or("custom/unrecognized"),
+        report
+            .current_config
+            .preview_model
+            .unwrap_or("custom/unrecognized"),
+        report.current_config.asr_gpu,
+        report.current_config.lifecycle_mode
+    );
+    println!();
+    println!("Tradeoffs:");
+    for tradeoff in &recommendation.tradeoffs {
+        println!("  - {tradeoff}");
+    }
+    if !recommendation.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for warning in &recommendation.warnings {
+            println!("  - {warning}");
         }
     }
-    Ok(())
+    println!();
+    println!("Install:");
+    for command in &recommendation.install_commands {
+        println!("  {command}");
+    }
+    println!("Select:");
+    for command in &recommendation.select_commands {
+        println!("  {command}");
+    }
+}
+
+fn print_detected_hardware(profile: &SystemProfile) {
+    println!(
+        "Detected hardware: {} cores, {} MiB RAM{}",
+        profile.cpu_logical_cores,
+        profile.ram_total_mib,
+        profile
+            .gpu_name
+            .as_ref()
+            .map(|name| format!(
+                ", GPU: {}{}",
+                name,
+                profile
+                    .gpu_vram_mib
+                    .map(|vram| format!(" ({vram} MiB VRAM)"))
+                    .unwrap_or_default()
+            ))
+            .unwrap_or_default()
+    );
+}
+
+fn catalog_entry_for_config_path(
+    model_dir: &std::path::Path,
+    path: &std::path::Path,
+) -> Option<&'static str> {
+    catalog_entry_for_path(model_dir, path).map(|entry| entry.id)
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }
 
 async fn install(id: &str, select_final: bool, select_preview: bool, json: bool) -> Result<()> {
