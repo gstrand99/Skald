@@ -81,6 +81,8 @@ phrases = [
 
 - Use [Setup wizard](/setup/) to benchmark candidates, or manage them directly
   with `skald models`.
+- Use `skald models recommend` for a read-only recommendation based on CPU, RAM,
+  NVIDIA/CUDA availability, installed catalog models, and current config.
 - CPU-safe recommendation: `small.en` with `gpu = false` and `on_demand`.
 - NVIDIA recommendation: `large-v3-turbo-q5` for final transcription and
   `small.en-q5` for text preview, after validating CUDA performance and VRAM
@@ -92,6 +94,27 @@ Catalog downloads are source-controlled metadata, not remote configuration.
 Files are streamed to the model filesystem, verified by exact size and SHA-256,
 then renamed into place. Paths outside the catalog remain supported but are
 reported as unverified and are never deleted by managed cleanup.
+
+CPU-only selection:
+
+```bash
+skald models recommend
+skald models install small.en
+skald models select small.en
+skald models select-preview small.en
+skald config profile cpu-safe
+```
+
+NVIDIA/CUDA selection:
+
+```bash
+skald models recommend
+skald models install large-v3-turbo-q5
+skald models install small.en-q5
+skald models select large-v3-turbo-q5
+skald models select-preview small.en-q5
+skald config profile power-user-nvidia
+```
 
 ## Notes
 

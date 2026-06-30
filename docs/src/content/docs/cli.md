@@ -119,6 +119,32 @@ See [Waybar](/linux/waybar/) and [Tray client](/linux/tray/).
 Skald never removes arbitrary model files. Cleanup is limited to files recorded
 in `managed-models.json`, and configured or loaded models are protected.
 
+`skald models recommend` is read-only. It reports detected CPU, RAM, NVIDIA/CUDA
+status, installed catalog models, current model config, one recommended final
+model, optional preview model, tradeoffs, and exact commands to install/select
+the recommendation.
+
+CPU-only example:
+
+```bash
+skald models recommend
+skald models install small.en
+skald models select small.en
+skald models select-preview small.en
+skald config profile cpu-safe
+```
+
+NVIDIA/CUDA example:
+
+```bash
+skald models recommend
+skald models install large-v3-turbo-q5
+skald models install small.en-q5
+skald models select large-v3-turbo-q5
+skald models select-preview small.en-q5
+skald config profile power-user-nvidia
+```
+
 Use `--select` or `--select-preview` during installation to configure the model
 immediately. Model commands support `--json`.
 
