@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${SKALD_NOTARY_PROFILE:?set SKALD_NOTARY_PROFILE to an xcrun notarytool keychain profile}"
+xcrun notarytool submit dist/Skald-arm64.dmg --keychain-profile "$SKALD_NOTARY_PROFILE" --wait
+xcrun stapler staple dist/Skald-arm64.dmg
+xcrun stapler validate dist/Skald-arm64.dmg

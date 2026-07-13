@@ -8,7 +8,7 @@ license.workspace = true
 name = "skald-overlay"
 path = "src/main.rs"
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
 clap.workspace = true
 cpal.workspace = true

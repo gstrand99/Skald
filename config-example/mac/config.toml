@@ -1,0 +1,13 @@
+config_version = 2
+
+[paths]
+config_dir = "~/Library/Application Support/Skald"
+model_dir = "~/Library/Application Support/Skald/models"
+runtime_dir = "~/Library/Caches/Skald/run"
+
+[asr]
+gpu = true
+gpu_backend = "metal"
+
+[injection]
+restore_clipboard = false

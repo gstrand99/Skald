@@ -97,6 +97,7 @@ fn backend_name(backend: &TargetBackend) -> &'static str {
         TargetBackend::X11 => "x11",
         TargetBackend::Hyprland => "hyprland",
         TargetBackend::Sway => "sway",
+        TargetBackend::MacOS => "macos",
     }
 }
 

@@ -214,6 +214,33 @@ bench-model-load: build
 build-cuda:
     cargo build -p skaldd --no-default-features --features asr-whisper-rs-cuda
 
+# Build the Apple Silicon daemon with Metal acceleration and the native app targets.
+build-macos:
+    scripts/macos-cargo build -p skaldd --no-default-features --features asr-whisper-rs-metal
+    scripts/macos-cargo build -p skald-cli -p skald-platform
+    swift build --package-path macos
+
+# Run macOS Rust and Swift checks without Linux desktop dependencies.
+check-macos:
+    cargo fmt --check
+    scripts/macos-cargo clippy -p skald-core -p skald-platform -p skald-cli -p skaldd --all-targets --locked --no-default-features --features skaldd/asr-whisper-rs-metal -- -D warnings
+    scripts/macos-cargo test -p skald-core -p skald-platform -p skald-cli -p skaldd --locked --no-default-features --features skaldd/asr-whisper-rs-metal
+    swift build --package-path macos
+
+# Assemble an ad-hoc signed app and DMG, or use SKALD_CODESIGN_IDENTITY for Developer ID.
+macos-package:
+    scripts/macos-package
+
+# Submit and staple the DMG using SKALD_NOTARY_PROFILE.
+macos-notarize:
+    scripts/macos-notarize
+
+# Verify the packaged app, disk image, and checksum.
+macos-release-check:
+    codesign --verify --strict --verbose=2 dist/Skald.app
+    hdiutil verify dist/Skald-arm64.dmg
+    shasum -a 256 -c dist/Skald-arm64.dmg.sha256
+
 # Optimized release builds for local installation.
 release:
     cargo build --workspace --release --locked
@@ -348,6 +375,12 @@ docs-deploy:
 
 # Run formatting, linting, and tests.
 check: docs-check
-    cargo fmt --check
-    cargo clippy --workspace --all-targets --locked -- -D warnings
-    cargo test --workspace --locked
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        just check-macos
+    else
+        cargo fmt --check
+        cargo clippy --workspace --all-targets --locked -- -D warnings
+        cargo test --workspace --locked
+    fi

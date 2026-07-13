@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+scripts/macos-cargo build -p skaldd --release --locked --no-default-features --features asr-whisper-rs-metal
+scripts/macos-cargo build -p skald-cli --release --locked
+swift build --package-path macos -c release
+
+app="dist/Skald.app"
+rm -rf "$app"
+mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin" "$app/Contents/Library/LaunchAgents"
+cp macos/Info.plist "$app/Contents/Info.plist"
+cp macos/com.gstrand.skald.daemon.plist "$app/Contents/Library/LaunchAgents/"
+cp macos/.build/release/SkaldApp "$app/Contents/MacOS/SkaldApp"
+cp macos/.build/release/skald-native target/release/skald target/release/skaldd "$app/Contents/Resources/bin/"
+
+identity="${SKALD_CODESIGN_IDENTITY:--}"
+timestamp=(--timestamp=none)
+if [[ "$identity" != "-" ]]; then
+    timestamp=(--timestamp)
+fi
+for binary in "$app/Contents/Resources/bin/skald" "$app/Contents/Resources/bin/skald-native" "$app/Contents/MacOS/SkaldApp"; do
+    codesign --force --options runtime "${timestamp[@]}" --sign "$identity" "$binary"
+done
+codesign --force --options runtime "${timestamp[@]}" --entitlements macos/Skald.entitlements --sign "$identity" "$app/Contents/Resources/bin/skaldd"
+codesign --force --options runtime "${timestamp[@]}" --entitlements macos/Skald.entitlements --sign "$identity" "$app"
+codesign --verify --strict --verbose=2 "$app"
+
+rm -f dist/Skald-arm64.dmg
+hdiutil create -quiet -volname Skald -srcfolder "$app" -ov -format UDZO dist/Skald-arm64.dmg
+if [[ "$identity" != "-" ]]; then
+    codesign --force "${timestamp[@]}" --sign "$identity" dist/Skald-arm64.dmg
+fi
+shasum -a 256 dist/Skald-arm64.dmg > dist/Skald-arm64.dmg.sha256

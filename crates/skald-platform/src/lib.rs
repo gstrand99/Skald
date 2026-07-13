@@ -37,6 +37,7 @@ pub enum TargetBackend {
     X11,
     Hyprland,
     Sway,
+    MacOS,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -85,6 +86,7 @@ pub enum PasteBackend {
     X11,
     Hyprland,
     Wtype,
+    MacOS,
 }
 
 pub struct ClipboardSnapshot {
@@ -92,6 +94,13 @@ pub struct ClipboardSnapshot {
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
+    if let Some(helper) = native_helper_path() {
+        return write_with_command(helper, &["clipboard-write"], text, "skald-native");
+    }
+    #[cfg(target_os = "macos")]
+    let (tool, args): (&'static str, &[&str]) = ("pbcopy", &[]);
+    #[cfg(not(target_os = "macos"))]
     let (tool, args): (&'static str, &[&str]) = if command_exists("wl-copy") {
         ("wl-copy", &[])
     } else if command_exists("xclip") {
@@ -121,6 +130,28 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
 }
 
 pub fn read_clipboard() -> Result<String, PlatformError> {
+    #[cfg(target_os = "macos")]
+    if let Some(helper) = native_helper_path() {
+        let output = Command::new(helper)
+            .arg("clipboard-read")
+            .output()
+            .map_err(|source| PlatformError::Start {
+                tool: "skald-native",
+                source,
+            })?;
+        if !output.status.success() {
+            return Err(PlatformError::Failed {
+                tool: "skald-native",
+            });
+        }
+        return String::from_utf8(output.stdout).map_err(|error| PlatformError::InvalidOutput {
+            tool: "skald-native",
+            message: error.to_string(),
+        });
+    }
+    #[cfg(target_os = "macos")]
+    let (tool, args): (&'static str, &[&str]) = ("pbpaste", &[]);
+    #[cfg(not(target_os = "macos"))]
     let (tool, args): (&'static str, &[&str]) = if command_exists("wl-paste") {
         ("wl-paste", &["--no-newline"])
     } else if command_exists("xclip") {
@@ -157,40 +188,65 @@ pub fn restore_clipboard(snapshot: ClipboardSnapshot) -> Result<(), PlatformErro
 
 #[must_use]
 pub fn capture_active_target() -> Option<TargetContext> {
-    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let desktop = env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if session == "x11" {
-        return capture_x11_target();
-    }
-    if desktop.contains("hyprland") {
-        return capture_hyprland_target();
-    }
-    if desktop.contains("sway") {
-        return capture_sway_target();
-    }
-    None
-}
-
-#[must_use]
-pub fn paste_backend() -> Option<PasteBackend> {
-    let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let desktop = env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    if session == "x11" && command_exists("xdotool") {
-        Some(PasteBackend::X11)
-    } else if desktop.contains("hyprland") && command_exists("hyprctl") {
-        Some(PasteBackend::Hyprland)
-    } else if desktop.contains("sway") && command_exists("wtype") {
-        Some(PasteBackend::Wtype)
-    } else {
+    #[cfg(target_os = "macos")]
+    return capture_macos_target();
+    #[cfg(not(target_os = "macos"))]
+    {
+        let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        let desktop = env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if session == "x11" {
+            return capture_x11_target();
+        }
+        if desktop.contains("hyprland") {
+            return capture_hyprland_target();
+        }
+        if desktop.contains("sway") {
+            return capture_sway_target();
+        }
         None
     }
 }
 
+#[must_use]
+pub fn paste_backend() -> Option<PasteBackend> {
+    #[cfg(target_os = "macos")]
+    return command_exists("osascript").then_some(PasteBackend::MacOS);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
+        let desktop = env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if session == "x11" && command_exists("xdotool") {
+            Some(PasteBackend::X11)
+        } else if desktop.contains("hyprland") && command_exists("hyprctl") {
+            Some(PasteBackend::Hyprland)
+        } else if desktop.contains("sway") && command_exists("wtype") {
+            Some(PasteBackend::Wtype)
+        } else {
+            None
+        }
+    }
+}
+
 pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
+    if backend == PasteBackend::MacOS
+        && let Some(helper) = native_helper_path()
+    {
+        let status = Command::new(helper)
+            .arg("paste")
+            .status()
+            .map_err(|source| PlatformError::Start {
+                tool: "skald-native",
+                source,
+            })?;
+        return status.success().then_some(()).ok_or(PlatformError::Failed {
+            tool: "skald-native",
+        });
+    }
     if backend == PasteBackend::Hyprland {
         sync_primary_selection_best_effort();
     }
@@ -201,6 +257,13 @@ pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
             &["dispatch", "sendshortcut", "SHIFT,Insert,activewindow"],
         ),
         PasteBackend::Wtype => ("wtype", &["-M", "ctrl", "-k", "v", "-m", "ctrl"]),
+        PasteBackend::MacOS => (
+            "osascript",
+            &[
+                "-e",
+                "tell application \"System Events\" to keystroke \"v\" using command down",
+            ],
+        ),
     };
     let status = Command::new(tool)
         .args(args)
@@ -338,48 +401,68 @@ pub fn capture_overlay_placement_hint() -> Option<OverlayPlacementHint> {
 }
 
 pub fn overlay_session_hint() -> OverlaySessionHint {
-    let environment = environment_report();
-    let session = environment.session_type.as_deref().unwrap_or("unknown");
-    let desktop = environment
-        .desktop
-        .as_deref()
-        .unwrap_or("unknown")
-        .to_ascii_lowercase();
-    if session == "wayland" && desktop.contains("gnome") {
-        OverlaySessionHint {
-            id: "gnome_wayland",
-            detail: "GNOME Wayland/Mutter does not expose wlr-layer-shell; overlay uses a floating window",
-            layer_shell_recommended: false,
-        }
-    } else if session == "wayland"
-        && (desktop.contains("hyprland") || desktop.contains("sway") || desktop.contains("river"))
+    #[cfg(target_os = "macos")]
+    return OverlaySessionHint {
+        id: "macos",
+        detail: "native Skald app overlay",
+        layer_shell_recommended: false,
+    };
+    #[cfg(not(target_os = "macos"))]
     {
-        OverlaySessionHint {
-            id: "layer_shell",
-            detail: "wlroots-style compositor; layer-shell overlay recommended",
-            layer_shell_recommended: true,
-        }
-    } else if session == "x11" {
-        OverlaySessionHint {
-            id: "x11",
-            detail: "X11 session; overlay uses a floating window",
-            layer_shell_recommended: false,
-        }
-    } else {
-        OverlaySessionHint {
-            id: "unknown",
-            detail: "unknown session; overlay may have limited placement support",
-            layer_shell_recommended: false,
+        let environment = environment_report();
+        let session = environment.session_type.as_deref().unwrap_or("unknown");
+        let desktop = environment
+            .desktop
+            .as_deref()
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        if session == "wayland" && desktop.contains("gnome") {
+            OverlaySessionHint {
+                id: "gnome_wayland",
+                detail: "GNOME Wayland/Mutter does not expose wlr-layer-shell; overlay uses a floating window",
+                layer_shell_recommended: false,
+            }
+        } else if session == "wayland"
+            && (desktop.contains("hyprland")
+                || desktop.contains("sway")
+                || desktop.contains("river"))
+        {
+            OverlaySessionHint {
+                id: "layer_shell",
+                detail: "wlroots-style compositor; layer-shell overlay recommended",
+                layer_shell_recommended: true,
+            }
+        } else if session == "x11" {
+            OverlaySessionHint {
+                id: "x11",
+                detail: "X11 session; overlay uses a floating window",
+                layer_shell_recommended: false,
+            }
+        } else {
+            OverlaySessionHint {
+                id: "unknown",
+                detail: "unknown session; overlay may have limited placement support",
+                layer_shell_recommended: false,
+            }
         }
     }
 }
 
 #[must_use]
 pub fn paste_report() -> PasteReport {
+    #[cfg(not(target_os = "macos"))]
     let environment = environment_report();
+    #[cfg(not(target_os = "macos"))]
     let desktop = environment.desktop.as_deref().unwrap_or("unknown");
+    #[cfg(not(target_os = "macos"))]
     let session = environment.session_type.as_deref().unwrap_or("unknown");
+    #[cfg(target_os = "macos")]
+    let clipboard_available = command_exists("pbcopy") && command_exists("pbpaste");
+    #[cfg(not(target_os = "macos"))]
     let clipboard_available = command_exists("wl-copy") || command_exists("xclip");
+    #[cfg(target_os = "macos")]
+    let backend = "macos";
+    #[cfg(not(target_os = "macos"))]
     let backend = classify_paste_backend(session, desktop);
     let paste_available = paste_backend().is_some();
     let target_detection_available = capture_active_target().is_some();
@@ -435,18 +518,26 @@ pub fn session_environment_mismatch(
     cli: &SessionEnvironmentSnapshot,
     daemon: &SessionEnvironmentSnapshot,
 ) -> Option<String> {
-    let cli_has_display = cli.display_present || cli.wayland_display_present;
-    let daemon_has_display = daemon.display_present || daemon.wayland_display_present;
-    if cli_has_display && !daemon_has_display {
-        return Some("Likely systemd user environment import problem.".into());
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (cli, daemon);
+        None
     }
-    if cli.dbus_session_bus_present && !daemon.dbus_session_bus_present {
-        return Some("Daemon is missing DBUS_SESSION_BUS_ADDRESS.".into());
+    #[cfg(not(target_os = "macos"))]
+    {
+        let cli_has_display = cli.display_present || cli.wayland_display_present;
+        let daemon_has_display = daemon.display_present || daemon.wayland_display_present;
+        if cli_has_display && !daemon_has_display {
+            return Some("Likely systemd user environment import problem.".into());
+        }
+        if cli.dbus_session_bus_present && !daemon.dbus_session_bus_present {
+            return Some("Daemon is missing DBUS_SESSION_BUS_ADDRESS.".into());
+        }
+        if cli.xdg_runtime_dir_present && !daemon.xdg_runtime_dir_present {
+            return Some("Daemon is missing XDG_RUNTIME_DIR.".into());
+        }
+        None
     }
-    if cli.xdg_runtime_dir_present && !daemon.xdg_runtime_dir_present {
-        return Some("Daemon is missing XDG_RUNTIME_DIR.".into());
-    }
-    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -459,51 +550,76 @@ pub struct TriggerGuidance {
 
 #[must_use]
 pub fn trigger_guidance(session_type: &str, desktop: &str) -> TriggerGuidance {
-    let desktop = desktop.to_ascii_lowercase();
-    let mut binding_examples = Vec::new();
-    let mut environment_import = Vec::new();
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (session_type, desktop);
+        TriggerGuidance {
+            recommended_command: "Control-Option-Space",
+            push_to_talk_note: "Use the Skald menu-bar app to configure the global shortcut.",
+            binding_examples: vec!["Open Skald from Applications and enable its shortcut.".into()],
+            environment_import: Vec::new(),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let desktop = desktop.to_ascii_lowercase();
+        let mut binding_examples = Vec::new();
+        let mut environment_import = Vec::new();
 
-    if desktop.contains("gnome") {
-        binding_examples.push("GNOME Settings -> Keyboard -> Custom Shortcuts".into());
-        binding_examples.push("Name: Skald Toggle".into());
-        binding_examples.push("Command: skald toggle".into());
-    } else if desktop.contains("kde") {
-        binding_examples.push("System Settings -> Shortcuts -> Custom Shortcut".into());
-        binding_examples.push("Command/URL: skald toggle".into());
-    } else if desktop.contains("hyprland") {
-        binding_examples.push("bind = $mainMod, SPACE, exec, skald toggle".into());
-        binding_examples.push("bind = $mainMod, V, exec, skald start".into());
-        binding_examples.push("bindr = $mainMod, V, exec, skald stop".into());
-        environment_import.push(
+        if desktop.contains("gnome") {
+            binding_examples.push("GNOME Settings -> Keyboard -> Custom Shortcuts".into());
+            binding_examples.push("Name: Skald Toggle".into());
+            binding_examples.push("Command: skald toggle".into());
+        } else if desktop.contains("kde") {
+            binding_examples.push("System Settings -> Shortcuts -> Custom Shortcut".into());
+            binding_examples.push("Command/URL: skald toggle".into());
+        } else if desktop.contains("hyprland") {
+            binding_examples.push("bind = $mainMod, SPACE, exec, skald toggle".into());
+            binding_examples.push("bind = $mainMod, V, exec, skald start".into());
+            binding_examples.push("bindr = $mainMod, V, exec, skald stop".into());
+            environment_import.push(
             "exec-once = systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS".into(),
         );
-        environment_import.push("exec-once = systemctl --user start skaldd".into());
-    } else if desktop.contains("sway") {
-        binding_examples.push("bindsym $mod+space exec skald toggle".into());
-        binding_examples.push("bindsym $mod+v exec skald start".into());
-        binding_examples.push("bindsym --release $mod+v exec skald stop".into());
-        environment_import.push(
+            environment_import.push("exec-once = systemctl --user start skaldd".into());
+        } else if desktop.contains("sway") {
+            binding_examples.push("bindsym $mod+space exec skald toggle".into());
+            binding_examples.push("bindsym $mod+v exec skald start".into());
+            binding_examples.push("bindsym --release $mod+v exec skald stop".into());
+            environment_import.push(
             "exec systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP DBUS_SESSION_BUS_ADDRESS".into(),
         );
-        environment_import.push("exec systemctl --user start skaldd".into());
-    } else if session_type == "x11" {
-        binding_examples.push("Bind a desktop shortcut to: skald toggle".into());
-    } else {
-        binding_examples.push("Bind an external shortcut to: skald toggle".into());
-        environment_import.push(
+            environment_import.push("exec systemctl --user start skaldd".into());
+        } else if session_type == "x11" {
+            binding_examples.push("Bind a desktop shortcut to: skald toggle".into());
+        } else {
+            binding_examples.push("Bind an external shortcut to: skald toggle".into());
+            environment_import.push(
             "Ensure the user service inherits WAYLAND_DISPLAY, DISPLAY, XDG_CURRENT_DESKTOP, and DBUS_SESSION_BUS_ADDRESS".into(),
         );
-    }
+        }
 
-    TriggerGuidance {
-        recommended_command: "skald toggle",
-        push_to_talk_note: "Push-to-talk is available when your compositor supports key-release bindings (skald start / skald stop).",
-        binding_examples,
-        environment_import,
+        TriggerGuidance {
+            recommended_command: "skald toggle",
+            push_to_talk_note: "Push-to-talk is available when your compositor supports key-release bindings (skald start / skald stop).",
+            binding_examples,
+            environment_import,
+        }
     }
 }
 
 pub fn notify(summary: &str, body: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification {} with title {}",
+            apple_script_string(body),
+            apple_script_string(summary)
+        );
+        if let Err(error) = Command::new("osascript").args(["-e", &script]).spawn() {
+            tracing::warn!(%error, "failed to start macOS notification");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
     if command_exists("notify-send")
         && let Err(error) = Command::new("notify-send").args([summary, body]).spawn()
     {
@@ -511,6 +627,77 @@ pub fn notify(summary: &str, body: &str) {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn apple_script_string(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(target_os = "macos")]
+fn capture_macos_target() -> Option<TargetContext> {
+    if let Some(helper) = native_helper_path()
+        && let Ok(output) = Command::new(helper).arg("target").output()
+        && output.status.success()
+        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        && let Some(pid) = value.get("pid").and_then(serde_json::Value::as_i64)
+    {
+        return Some(TargetContext {
+            backend: TargetBackend::MacOS,
+            id: pid.to_string(),
+            app_id: value
+                .get("bundle_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            title: None,
+        });
+    }
+    let script = "tell application \"System Events\" to tell first application process whose frontmost is true to get {unix id, bundle identifier}";
+    let output = command_stdout("osascript", &["-e", script])?;
+    let (pid, bundle_id) = output.split_once(',')?;
+    let pid = pid.trim();
+    (!pid.is_empty()).then(|| TargetContext {
+        backend: TargetBackend::MacOS,
+        id: pid.into(),
+        app_id: (!bundle_id.trim().is_empty()).then(|| bundle_id.trim().into()),
+        title: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn native_helper_path() -> Option<std::path::PathBuf> {
+    let current = std::env::current_exe().ok()?;
+    let sibling = current.with_file_name("skald-native");
+    sibling.is_file().then_some(sibling)
+}
+
+#[cfg(target_os = "macos")]
+fn write_with_command(
+    executable: std::path::PathBuf,
+    args: &[&str],
+    text: &str,
+    tool: &'static str,
+) -> Result<(), PlatformError> {
+    let mut child = Command::new(executable)
+        .args(args)
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    child
+        .stdin
+        .take()
+        .ok_or(PlatformError::StdinUnavailable { tool })?
+        .write_all(text.as_bytes())
+        .map_err(|source| PlatformError::Write { tool, source })?;
+    let status = child
+        .wait()
+        .map_err(|source| PlatformError::Start { tool, source })?;
+    status
+        .success()
+        .then_some(())
+        .ok_or(PlatformError::Failed { tool })
+}
+
+#[cfg(not(target_os = "macos"))]
 #[derive(Deserialize)]
 struct HyprlandWindow {
     address: String,
@@ -649,6 +836,7 @@ fn parse_xy_pair(text: &str) -> Option<(i32, i32)> {
     Some((x, y))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn capture_hyprland_target() -> Option<TargetContext> {
     let output = Command::new("hyprctl")
         .args(["activewindow", "-j"])
@@ -666,6 +854,7 @@ fn capture_hyprland_target() -> Option<TargetContext> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn capture_x11_target() -> Option<TargetContext> {
     let id = command_stdout("xdotool", &["getactivewindow"])?;
     let title = command_stdout("xdotool", &["getwindowname", &id]);
@@ -678,6 +867,7 @@ fn capture_x11_target() -> Option<TargetContext> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 fn capture_sway_target() -> Option<TargetContext> {
     let output = Command::new("swaymsg")
         .args(["-t", "get_tree", "-r"])
@@ -702,6 +892,7 @@ fn capture_sway_target() -> Option<TargetContext> {
     })
 }
 
+#[cfg(any(not(target_os = "macos"), test))]
 fn find_focused(value: &serde_json::Value) -> Option<&serde_json::Value> {
     if value.get("focused").and_then(serde_json::Value::as_bool) == Some(true) {
         return Some(value);
@@ -750,31 +941,54 @@ pub struct ToolReport {
 
 #[must_use]
 pub fn environment_report() -> EnvironmentReport {
-    const TOOLS: &[&str] = &[
-        "wtype",
-        "xdotool",
-        "ydotool",
-        "hyprctl",
-        "swaymsg",
-        "notify-send",
-        "wl-copy",
-        "wl-paste",
-        "xclip",
-    ];
-    EnvironmentReport {
-        session_type: env::var("XDG_SESSION_TYPE").ok(),
-        desktop: env::var("XDG_CURRENT_DESKTOP").ok(),
-        wayland_display_present: env::var_os("WAYLAND_DISPLAY").is_some(),
-        display_present: env::var_os("DISPLAY").is_some(),
-        dbus_session_bus_present: env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some(),
-        xdg_runtime_dir_present: env::var_os("XDG_RUNTIME_DIR").is_some(),
-        tools: TOOLS
-            .iter()
+    #[cfg(target_os = "macos")]
+    return EnvironmentReport {
+        session_type: Some("macos".into()),
+        desktop: Some("macOS".into()),
+        wayland_display_present: false,
+        display_present: true,
+        dbus_session_bus_present: false,
+        xdg_runtime_dir_present: false,
+        tools: ["skald-native", "pbcopy", "pbpaste", "osascript"]
+            .into_iter()
             .map(|name| ToolReport {
                 name,
-                available: command_exists(name),
+                available: if name == "skald-native" {
+                    native_helper_path().is_some()
+                } else {
+                    command_exists(name)
+                },
             })
             .collect(),
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        const TOOLS: &[&str] = &[
+            "wtype",
+            "xdotool",
+            "ydotool",
+            "hyprctl",
+            "swaymsg",
+            "notify-send",
+            "wl-copy",
+            "wl-paste",
+            "xclip",
+        ];
+        EnvironmentReport {
+            session_type: env::var("XDG_SESSION_TYPE").ok(),
+            desktop: env::var("XDG_CURRENT_DESKTOP").ok(),
+            wayland_display_present: env::var_os("WAYLAND_DISPLAY").is_some(),
+            display_present: env::var_os("DISPLAY").is_some(),
+            dbus_session_bus_present: env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some(),
+            xdg_runtime_dir_present: env::var_os("XDG_RUNTIME_DIR").is_some(),
+            tools: TOOLS
+                .iter()
+                .map(|name| ToolReport {
+                    name,
+                    available: command_exists(name),
+                })
+                .collect(),
+        }
     }
 }
 
@@ -839,6 +1053,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn detects_daemon_display_import_problem() {
         let cli = SessionEnvironmentSnapshot {
             session_type: Some("wayland".into()),
@@ -862,6 +1077,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn hyprland_trigger_guidance_includes_environment_import() {
         let guidance = trigger_guidance("wayland", "Hyprland");
         assert!(

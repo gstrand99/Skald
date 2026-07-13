@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sdk="$(find /Library/Developer/CommandLineTools/SDKs -maxdepth 1 -type d -name 'MacOSX*.sdk' | sort -V | tail -n 1)"
+if [[ -z "$sdk" || ! -d "$sdk/usr/include/c++/v1" ]]; then
+    echo "No complete macOS SDK with C++ headers was found. Install current Xcode Command Line Tools." >&2
+    exit 1
+fi
+export CXXFLAGS="${CXXFLAGS:-} -isysroot $sdk -isystem $sdk/usr/include/c++/v1"
+exec cargo "$@"

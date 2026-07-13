@@ -89,7 +89,12 @@ impl WhisperEngine {
         if !path.is_file() {
             return Err(AsrError::ModelNotFound { path });
         }
-        if self.config.gpu && !cfg!(feature = "asr-whisper-rs-cuda") {
+        if self.config.gpu
+            && !cfg!(any(
+                feature = "asr-whisper-rs-cuda",
+                feature = "asr-whisper-rs-metal"
+            ))
+        {
             return Err(AsrError::UnsupportedFeature {
                 feature: "CUDA support was not enabled at build time".into(),
             });

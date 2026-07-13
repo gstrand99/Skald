@@ -221,6 +221,29 @@ pub fn recommend_model_profile(
     cuda_build: bool,
     include_preview: bool,
 ) -> ModelRecommendation {
+    if profile.distro_id.as_deref() == Some("macos") && cuda_build {
+        return ModelRecommendation {
+            hardware_profile: "apple-silicon-metal".into(),
+            final_model_id: "large-v3-turbo-q5".into(),
+            preview_model_id: include_preview.then(|| "small.en-q5".into()),
+            asr_gpu: true,
+            lifecycle_mode: "keep_warm".into(),
+            warm_on_daemon_start: true,
+            install_commands: install_commands(
+                "large-v3-turbo-q5",
+                include_preview.then_some("small.en-q5"),
+            ),
+            select_commands: select_commands(
+                "large-v3-turbo-q5",
+                include_preview.then_some("small.en-q5"),
+            ),
+            tradeoffs: vec![
+                "Metal acceleration provides the lowest-latency Apple Silicon path.".into(),
+                "The model remains local and is kept warm for responsive dictation.".into(),
+            ],
+            warnings: Vec::new(),
+        };
+    }
     if profile.has_nvidia_gpu && cuda_build && profile.gpu_vram_mib.unwrap_or(0) >= 2_048 {
         return ModelRecommendation {
             hardware_profile: "power-user-nvidia".into(),
@@ -415,6 +438,28 @@ mod tests {
         );
         assert!(recommendation.asr_gpu);
         assert_eq!(recommendation.lifecycle_mode, "keep_warm");
+    }
+
+    #[test]
+    fn macos_profile_recommends_metal_plan() {
+        let profile = SystemProfile {
+            cpu_logical_cores: 10,
+            ram_total_mib: 16_384,
+            has_nvidia_gpu: false,
+            gpu_name: Some("Apple M1 Pro".into()),
+            gpu_vram_mib: None,
+            model_dir_free_mib: Some(10_000),
+            distro_id: Some("macos".into()),
+            audio_stack_available: true,
+            cuda_daemon_build: Some(true),
+        };
+        let recommendation = recommend_model_profile(&profile, true, true);
+        assert_eq!(recommendation.hardware_profile, "apple-silicon-metal");
+        assert!(recommendation.asr_gpu);
+        assert_eq!(
+            recommendation.preview_model_id.as_deref(),
+            Some("small.en-q5")
+        );
     }
 
     #[test]

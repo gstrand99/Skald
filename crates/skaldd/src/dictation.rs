@@ -615,6 +615,8 @@ pub(crate) async fn finish_dictation(
 fn acceleration_backend() -> &'static str {
     if cfg!(feature = "asr-whisper-rs-cuda") {
         "cuda"
+    } else if cfg!(feature = "asr-whisper-rs-metal") {
+        "metal"
     } else {
         "cpu"
     }

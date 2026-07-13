@@ -48,6 +48,8 @@ async fn main() -> Result<()> {
     if args.build_info_json {
         let acceleration = if cfg!(feature = "asr-whisper-rs-cuda") {
             "cuda"
+        } else if cfg!(feature = "asr-whisper-rs-metal") {
+            "metal"
         } else {
             "cpu"
         };
@@ -87,7 +89,10 @@ async fn main() -> Result<()> {
     let state = Arc::new(AppState {
         status: RwLock::new(DaemonStatus {
             cleanup_enabled: config.cleanup.enabled,
-            asr_gpu_build: cfg!(feature = "asr-whisper-rs-cuda"),
+            asr_gpu_build: cfg!(any(
+                feature = "asr-whisper-rs-cuda",
+                feature = "asr-whisper-rs-metal"
+            )),
             auto_paste_effective: auto_paste_effective.into(),
             preview_model_state: preview_enabled.then_some(ModelState::Unloaded),
             ..DaemonStatus::default()
