@@ -66,7 +66,11 @@ enum Commands {
     #[command(name = "ptt-stop")]
     PttStop,
     Cancel,
-    Watch,
+    Watch {
+        /// Stream raw privacy-scoped daemon events as newline-delimited JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Stream privacy-safe JSON updates for a Waybar custom module.
     Waybar,
     Overlay {
@@ -454,7 +458,7 @@ async fn main() -> Result<()> {
         Commands::Start | Commands::PttStart => print_response(&send(Command::Start).await?)?,
         Commands::Stop | Commands::PttStop => print_response(&send(Command::Stop).await?)?,
         Commands::Cancel => print_response(&send(Command::Cancel).await?)?,
-        Commands::Watch => watch().await?,
+        Commands::Watch { json } => watch(json).await?,
         Commands::Waybar => waybar().await?,
         Commands::Overlay { command } => run_overlay(command)?,
         Commands::Transcribe { audio_file } => print_response(
@@ -975,23 +979,26 @@ pub(crate) async fn send(command: Command) -> Result<Response> {
     client::request(&socket, command).await
 }
 
-async fn watch() -> Result<()> {
+async fn watch(json: bool) -> Result<()> {
     let socket = configured_socket_path()?;
-    let (response, reader) = client::subscribe(
-        &socket,
-        vec![
-            EventKind::State,
-            EventKind::Result,
-            EventKind::Error,
-            EventKind::Preview,
-        ],
-    )
-    .await?;
+    let mut event_kinds = vec![
+        EventKind::State,
+        EventKind::Result,
+        EventKind::Error,
+        EventKind::Preview,
+    ];
+    if json {
+        event_kinds.push(EventKind::AudioLevel);
+    }
+    let (response, reader) = client::subscribe(&socket, event_kinds).await?;
     if !response.ok {
         if let Some(error) = &response.error {
             bail!("{} ({})", error.message, error.code);
         }
         bail!("subscribe rejected");
+    }
+    if json {
+        print_initial_status_event(response.status)?;
     }
     let mut reader = BufReader::new(reader);
     let mut preview_display = PreviewDisplay::default();
@@ -1002,6 +1009,10 @@ async fn watch() -> Result<()> {
             Err(error) if error.to_string() == "daemon closed the event stream" => break,
             Err(error) => return Err(error),
         };
+        if json {
+            print_event_json(&event)?;
+            continue;
+        }
         match event {
             Event::Preview {
                 stable,
@@ -1065,6 +1076,23 @@ async fn watch() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_event_json(event: &Event) -> Result<()> {
+    println!("{}", serde_json::to_string(event)?);
+    std::io::stdout().flush()?;
+    Ok(())
+}
+
+fn print_initial_status_event(status: Option<skald_core::protocol::DaemonStatus>) -> Result<()> {
+    let Some(status) = status else { return Ok(()) };
+    print_event_json(&Event::State {
+        protocol_version: status.protocol_version,
+        timestamp_ms: unix_seconds() * 1_000,
+        job_id: status.active_job_id,
+        job_state: status.job_state,
+        final_model_state: status.final_model_state,
+    })
 }
 
 #[derive(Default)]

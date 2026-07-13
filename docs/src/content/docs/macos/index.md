@@ -24,6 +24,11 @@ Skald needs microphone access to record speech. Safe paste additionally needs
 Accessibility access so the native helper can send Command-V. If Accessibility
 is denied, dictation still copies the final result to the clipboard.
 
+The menu-bar app streams daemon state and audio levels into a non-activating
+overlay. Enable `[preview].enabled` and install a preview model to also show
+ephemeral realtime text; preview text is cleared when each job ends. The global
+shortcut can be changed from the menu and is retained in macOS preferences.
+
 Previous-clipboard restoration is disabled by default on macOS. Enabling it
 causes Skald to read the existing pasteboard before writing the transcript and
 may trigger macOS pasteboard privacy controls.
