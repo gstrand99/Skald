@@ -9,13 +9,14 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use dialoguer::{Confirm, Select};
 use indicatif::{ProgressBar, ProgressStyle};
 use serde::Serialize;
+#[cfg(not(target_os = "macos"))]
+use skald_core::service::SERVICE_UNIT_NAME;
 use skald_core::{
     config::Config,
     download::{download_model, verify_model_file},
     models::{ModelCandidate, catalog_entry, recommended_candidates, record_managed_model},
     paths::{resolve_model_dir, scaffold_config_layout},
     protocol::{AsrBenchCandidate, Command},
-    service::SERVICE_UNIT_NAME,
     setup::{SetupSelection, mark_setup_complete, needs_setup, setup_fixture_path},
     system_probe::{SystemProfile, dependency_report, probe_system},
 };
@@ -264,7 +265,11 @@ pub async fn run(options: SetupOptions) -> Result<()> {
         service.restarted = true;
     } else if !options.non_interactive {
         let install_service = Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
-            .with_prompt("Install the systemd user service for skaldd?")
+            .with_prompt(if cfg!(target_os = "macos") {
+                "Install the per-user LaunchAgent for skaldd?"
+            } else {
+                "Install the systemd user service for skaldd?"
+            })
             .default(true)
             .interact()?;
         service.requested = install_service;
@@ -283,10 +288,7 @@ pub async fn run(options: SetupOptions) -> Result<()> {
         let session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
         let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
         let trigger = trigger_guidance(&session, &desktop);
-        println!(
-            "\nBind a compositor shortcut to `{}`:",
-            trigger.recommended_command
-        );
+        println!("\nTrigger: {}", trigger.recommended_command);
         for line in trigger.binding_examples {
             println!("  {line}");
         }
@@ -469,6 +471,9 @@ fn print_setup_report(report: &SetupReport) {
 fn print_daemon_restart_warning() {
     println!();
     println!("Warning: skaldd is still running with the previous configuration.");
+    #[cfg(target_os = "macos")]
+    println!("Restart it with `skald service restart`.");
+    #[cfg(not(target_os = "macos"))]
     println!(
         "Restart it with `skald service restart` or `systemctl --user restart {SERVICE_UNIT_NAME}`.",
     );
@@ -490,7 +495,12 @@ fn print_profile(profile: &SystemProfile, cuda_build: Option<bool>) {
         println!("  Model dir free space: {free} MiB");
     }
     println!(
-        "  CUDA daemon build: {}",
+        "  {} daemon build: {}",
+        if cfg!(target_os = "macos") {
+            "Metal"
+        } else {
+            "CUDA"
+        },
         match cuda_build {
             Some(true) => "yes",
             Some(false) => "no",
@@ -555,7 +565,9 @@ fn which_skaldd() -> Result<PathBuf> {
         .output()
         .context("failed to locate skaldd")?;
     if !output.status.success() {
-        bail!("skaldd not found in PATH; run `just install` or `just build-cuda` first");
+        bail!(
+            "skaldd not found in PATH; run `just build-macos` on macOS or `just build-cuda` on Linux first"
+        );
     }
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim().to_owned(),

@@ -8,6 +8,7 @@ license.workspace = true
 default = ["asr-whisper-rs-cpu"]
 asr-whisper-rs-cpu = []
 asr-whisper-rs-cuda = ["whisper-rs/cuda"]
+asr-whisper-rs-metal = ["whisper-rs/metal"]
 
 [dependencies]
 anyhow.workspace = true

@@ -35,96 +35,148 @@ pub struct DependencyReport {
 
 #[must_use]
 pub fn probe_system(model_dir: &Path) -> SystemProfile {
-    let nvidia = nvidia_gpu_info();
-    SystemProfile {
-        cpu_logical_cores: std::thread::available_parallelism()
-            .map(std::num::NonZero::get)
-            .unwrap_or(4),
+    #[cfg(target_os = "macos")]
+    return SystemProfile {
+        cpu_logical_cores: std::thread::available_parallelism().map_or(4, std::num::NonZero::get),
         ram_total_mib: read_ram_total_mib(),
-        has_nvidia_gpu: nvidia.is_some(),
-        gpu_name: nvidia.as_ref().map(|(name, _)| name.clone()),
-        gpu_vram_mib: nvidia.map(|(_, vram)| vram),
+        has_nvidia_gpu: false,
+        gpu_name: apple_chip_name(),
+        gpu_vram_mib: None,
         model_dir_free_mib: free_space_mib(model_dir),
-        distro_id: read_distro_id(),
-        audio_stack_available: command_exists("pw-cli") || command_exists("pactl"),
+        distro_id: Some("macos".into()),
+        audio_stack_available: true,
         cuda_daemon_build: None,
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        let nvidia = nvidia_gpu_info();
+        SystemProfile {
+            cpu_logical_cores: std::thread::available_parallelism()
+                .map(std::num::NonZero::get)
+                .unwrap_or(4),
+            ram_total_mib: read_ram_total_mib(),
+            has_nvidia_gpu: nvidia.is_some(),
+            gpu_name: nvidia.as_ref().map(|(name, _)| name.clone()),
+            gpu_vram_mib: nvidia.map(|(_, vram)| vram),
+            model_dir_free_mib: free_space_mib(model_dir),
+            distro_id: read_distro_id(),
+            audio_stack_available: command_exists("pw-cli") || command_exists("pactl"),
+            cuda_daemon_build: None,
+        }
     }
 }
 
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn dependency_report(distro_id: Option<&str>) -> DependencyReport {
-    let session_type = std::env::var("XDG_SESSION_TYPE")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    let mut checks = vec![
-        dependency(
-            "PipeWire or PulseAudio",
-            command_exists("pw-cli") || command_exists("pactl"),
-            "audio",
-            distro_id,
-            &["pipewire", "pulseaudio"],
-        ),
-        dependency(
-            "wl-clipboard",
-            command_exists("wl-copy"),
-            "clipboard",
-            distro_id,
-            &["wl-clipboard"],
-        ),
-        dependency(
-            "xclip",
-            command_exists("xclip"),
-            "clipboard",
-            distro_id,
-            &["xclip"],
-        ),
-        dependency(
-            "notify-send",
-            command_exists("notify-send"),
-            "notifications",
-            distro_id,
-            &["libnotify"],
-        ),
-    ];
-
-    if session_type == "wayland" && desktop.contains("hyprland") {
-        checks.push(dependency(
-            "hyprctl",
-            command_exists("hyprctl"),
-            "paste",
-            distro_id,
-            &["hyprland"],
-        ));
-    } else if session_type == "wayland" && desktop.contains("sway") {
-        checks.push(dependency(
-            "wtype",
-            command_exists("wtype"),
-            "paste",
-            distro_id,
-            &["wtype"],
-        ));
-    } else if session_type == "x11" {
-        checks.push(dependency(
-            "xdotool",
-            command_exists("xdotool"),
-            "paste",
-            distro_id,
-            &["xdotool"],
-        ));
+    #[cfg(target_os = "macos")]
+    {
+        let _ = distro_id;
+        let checks = vec![
+            DependencyCheck {
+                name: "CoreAudio".into(),
+                available: true,
+                category: "audio".into(),
+                install_hint: None,
+            },
+            DependencyCheck {
+                name: "macOS pasteboard".into(),
+                available: command_exists("pbcopy") && command_exists("pbpaste"),
+                category: "clipboard".into(),
+                install_hint: None,
+            },
+            DependencyCheck {
+                name: "Accessibility automation".into(),
+                available: command_exists("osascript"),
+                category: "paste".into(),
+                install_hint: Some(
+                    "Allow Skald in System Settings -> Privacy & Security -> Accessibility".into(),
+                ),
+            },
+        ];
+        let missing = checks
+            .iter()
+            .filter(|check| !check.available)
+            .map(|check| check.name.clone())
+            .collect();
+        DependencyReport { checks, missing }
     }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let session_type = std::env::var("XDG_SESSION_TYPE")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_default()
+            .to_ascii_lowercase();
 
-    let missing = checks
-        .iter()
-        .filter(|check| !check.available)
-        .map(|check| check.name.clone())
-        .collect();
-    DependencyReport { checks, missing }
+        let mut checks = vec![
+            dependency(
+                "PipeWire or PulseAudio",
+                command_exists("pw-cli") || command_exists("pactl"),
+                "audio",
+                distro_id,
+                &["pipewire", "pulseaudio"],
+            ),
+            dependency(
+                "wl-clipboard",
+                command_exists("wl-copy"),
+                "clipboard",
+                distro_id,
+                &["wl-clipboard"],
+            ),
+            dependency(
+                "xclip",
+                command_exists("xclip"),
+                "clipboard",
+                distro_id,
+                &["xclip"],
+            ),
+            dependency(
+                "notify-send",
+                command_exists("notify-send"),
+                "notifications",
+                distro_id,
+                &["libnotify"],
+            ),
+        ];
+
+        if session_type == "wayland" && desktop.contains("hyprland") {
+            checks.push(dependency(
+                "hyprctl",
+                command_exists("hyprctl"),
+                "paste",
+                distro_id,
+                &["hyprland"],
+            ));
+        } else if session_type == "wayland" && desktop.contains("sway") {
+            checks.push(dependency(
+                "wtype",
+                command_exists("wtype"),
+                "paste",
+                distro_id,
+                &["wtype"],
+            ));
+        } else if session_type == "x11" {
+            checks.push(dependency(
+                "xdotool",
+                command_exists("xdotool"),
+                "paste",
+                distro_id,
+                &["xdotool"],
+            ));
+        }
+
+        let missing = checks
+            .iter()
+            .filter(|check| !check.available)
+            .map(|check| check.name.clone())
+            .collect();
+        DependencyReport { checks, missing }
+    }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn dependency(
     name: &str,
     available: bool,
@@ -144,6 +196,7 @@ fn dependency(
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn package_hint(distro_id: Option<&str>, packages: &[&str]) -> String {
     let joined = packages.join(" ");
     match distro_id {
@@ -156,6 +209,7 @@ fn package_hint(distro_id: Option<&str>, packages: &[&str]) -> String {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn read_distro_id() -> Option<String> {
     let content = std::fs::read_to_string("/etc/os-release").ok()?;
     content
@@ -165,18 +219,44 @@ fn read_distro_id() -> Option<String> {
 }
 
 fn read_ram_total_mib() -> u64 {
-    let content = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
-    for line in content.lines() {
-        if let Some(value) = line.strip_prefix("MemTotal:") {
-            let kib = value
-                .trim()
-                .strip_suffix(" kB")
-                .and_then(|v| v.trim().parse::<u64>().ok())
-                .unwrap_or(0);
-            return kib / 1024;
-        }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .map_or(0, |bytes| bytes / (1024 * 1024))
     }
-    0
+    #[cfg(not(target_os = "macos"))]
+    {
+        let content = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+        for line in content.lines() {
+            if let Some(value) = line.strip_prefix("MemTotal:") {
+                let kib = value
+                    .trim()
+                    .strip_suffix(" kB")
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(0);
+                return kib / 1024;
+            }
+        }
+        0
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn apple_chip_name() -> Option<String> {
+    Command::new("sysctl")
+        .args(["-n", "machdep.cpu.brand_string"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 fn nearest_existing_path(path: &Path) -> Option<PathBuf> {
@@ -198,6 +278,7 @@ pub fn free_space_mib(path: &Path) -> Option<u64> {
     Some(free_bytes / (1024 * 1024))
 }
 
+#[cfg(not(target_os = "macos"))]
 fn nvidia_gpu_info() -> Option<(String, u64)> {
     let output = Command::new("nvidia-smi")
         .args([
@@ -233,6 +314,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_os = "macos"))]
     fn dependency_report_lists_audio_stack() {
         let report = dependency_report(Some("arch"));
         assert!(

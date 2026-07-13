@@ -1,5 +1,6 @@
 /target/
 /dist/
+/macos/.build/
 AGENTS.md
 Skald_implementation_plan.md
 findings.md

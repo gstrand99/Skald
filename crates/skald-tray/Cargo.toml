@@ -8,7 +8,7 @@ license.workspace = true
 name = "skald-tray"
 path = "src/main.rs"
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 anyhow.workspace = true
 ksni = "0.3.5"
 tokio.workspace = true

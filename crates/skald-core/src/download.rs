@@ -42,6 +42,17 @@ pub enum DownloadError {
     InsufficientSpace { needed_mib: u64, available_mib: u64 },
 }
 
+impl DownloadError {
+    #[must_use]
+    pub fn is_access_denied(&self) -> bool {
+        match self {
+            Self::Http(error) => error.status() == Some(reqwest::StatusCode::FORBIDDEN),
+            Self::RetriesExhausted { message, .. } => message.contains("403 Forbidden"),
+            _ => false,
+        }
+    }
+}
+
 struct PartialDownload {
     path: std::path::PathBuf,
     placed: bool,
@@ -248,6 +259,15 @@ mod tests {
 
     fn sha256_hex(bytes: &[u8]) -> String {
         digest_hex(Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn identifies_exhausted_forbidden_downloads() {
+        let error = DownloadError::RetriesExhausted {
+            attempts: 3,
+            message: "HTTP request failed: HTTP status client error (403 Forbidden)".into(),
+        };
+        assert!(error.is_access_denied());
     }
 
     #[tokio::test]

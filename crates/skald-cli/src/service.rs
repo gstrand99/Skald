@@ -1,7 +1,7 @@
-use std::{
-    path::PathBuf,
-    process::{Command, Stdio},
-};
+use std::{path::PathBuf, process::Command};
+
+#[cfg(not(target_os = "macos"))]
+use std::process::Stdio;
 
 use anyhow::{Context, Result, bail};
 use skald_core::service::{self, SERVICE_UNIT_NAME};
@@ -22,17 +22,31 @@ fn install_inner(log_level: &str, print_output: bool) -> Result<()> {
     service::write_service_unit(&unit_path, &skaldd.display().to_string(), log_level)
         .map_err(|error| anyhow::anyhow!(error))?;
 
-    run_systemctl(&["daemon-reload"])?;
-    run_systemctl(&["enable", SERVICE_UNIT_NAME])?;
+    #[cfg(target_os = "macos")]
+    {
+        let _ = run_launchctl(&["bootout", &launchctl_service_target()?]);
+        run_launchctl(&[
+            "bootstrap",
+            &launchctl_domain()?,
+            &unit_path.display().to_string(),
+        ])?;
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        run_systemctl(&["daemon-reload"])?;
+        run_systemctl(&["enable", SERVICE_UNIT_NAME])?;
+    }
 
     if print_output {
         println!("Installed {}", unit_path.display());
         println!();
         println!("Start the service:");
+        #[cfg(not(target_os = "macos"))]
         println!("  systemctl --user start {SERVICE_UNIT_NAME}");
         println!("  skald service start");
         println!();
         println!("Check status:");
+        #[cfg(not(target_os = "macos"))]
         println!("  systemctl --user status {SERVICE_UNIT_NAME}");
         println!("  skald service status");
         println!();
@@ -44,6 +58,9 @@ fn install_inner(log_level: &str, print_output: bool) -> Result<()> {
 pub fn uninstall() -> Result<()> {
     let unit_path =
         service::service_unit_path().context("systemd user config directory unavailable")?;
+    #[cfg(target_os = "macos")]
+    let _ = run_launchctl(&["bootout", &launchctl_service_target()?]);
+    #[cfg(not(target_os = "macos"))]
     let _ = run_systemctl(&["disable", "--now", SERVICE_UNIT_NAME]);
     service::remove_service_unit(&unit_path).map_err(|error| match error {
         service::ServiceError::NotInstalled(_) => {
@@ -51,41 +68,59 @@ pub fn uninstall() -> Result<()> {
         }
         other => anyhow::anyhow!(other),
     })?;
+    #[cfg(not(target_os = "macos"))]
     run_systemctl(&["daemon-reload"])?;
     println!("Removed {}", unit_path.display());
     Ok(())
 }
 
 pub fn start() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    run_launchctl(&["kickstart", "-k", &launchctl_service_target()?])?;
+    #[cfg(not(target_os = "macos"))]
     run_systemctl(&["start", SERVICE_UNIT_NAME])?;
     println!("Started {SERVICE_UNIT_NAME}");
     Ok(())
 }
 
 pub fn restart() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    run_launchctl(&["kickstart", "-k", &launchctl_service_target()?])?;
+    #[cfg(not(target_os = "macos"))]
     run_systemctl(&["restart", SERVICE_UNIT_NAME])?;
     println!("Restarted {SERVICE_UNIT_NAME}");
     Ok(())
 }
 
 pub fn restart_quiet() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return run_launchctl(&["kickstart", "-k", &launchctl_service_target()?]);
+    #[cfg(not(target_os = "macos"))]
     run_systemctl(&["restart", SERVICE_UNIT_NAME])
 }
 
 pub fn stop() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    run_launchctl(&["kill", "SIGTERM", &launchctl_service_target()?])?;
+    #[cfg(not(target_os = "macos"))]
     run_systemctl(&["stop", SERVICE_UNIT_NAME])?;
     println!("Stopped {SERVICE_UNIT_NAME}");
     Ok(())
 }
 
 pub fn status() -> Result<()> {
-    Command::new("systemctl")
-        .args(["--user", "status", SERVICE_UNIT_NAME])
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
-        .context("failed to run systemctl --user status")?;
-    Ok(())
+    #[cfg(target_os = "macos")]
+    return run_launchctl(&["print", &launchctl_service_target()?]);
+    #[cfg(not(target_os = "macos"))]
+    {
+        Command::new("systemctl")
+            .args(["--user", "status", SERVICE_UNIT_NAME])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .context("failed to run systemctl --user status")?;
+        Ok(())
+    }
 }
 
 pub fn print_trigger_guidance() {
@@ -131,6 +166,7 @@ fn resolve_skaldd_path() -> Result<PathBuf> {
     bail!("could not find skaldd binary; build or install it next to skald");
 }
 
+#[cfg(not(target_os = "macos"))]
 fn run_systemctl(args: &[&str]) -> Result<()> {
     let status = Command::new("systemctl")
         .arg("--user")
@@ -141,5 +177,38 @@ fn run_systemctl(args: &[&str]) -> Result<()> {
         Ok(())
     } else {
         bail!("systemctl --user {} exited with {}", args.join(" "), status);
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_domain() -> Result<String> {
+    let output = Command::new("id")
+        .arg("-u")
+        .output()
+        .context("failed to determine the current user id")?;
+    if !output.status.success() {
+        bail!("id -u exited unsuccessfully");
+    }
+    Ok(format!(
+        "gui/{}",
+        String::from_utf8_lossy(&output.stdout).trim()
+    ))
+}
+
+#[cfg(target_os = "macos")]
+fn launchctl_service_target() -> Result<String> {
+    Ok(format!("{}/{}", launchctl_domain()?, SERVICE_UNIT_NAME))
+}
+
+#[cfg(target_os = "macos")]
+fn run_launchctl(args: &[&str]) -> Result<()> {
+    let status = Command::new("launchctl")
+        .args(args)
+        .status()
+        .with_context(|| format!("failed to run launchctl {}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("launchctl {} exited with {status}", args.join(" "))
     }
 }

@@ -111,7 +111,7 @@ impl Default for PreviewConfig {
             min_rms_energy: 0.003,
             ring_buffer_seconds: 30,
             gpu: false,
-            model_path: "~/.local/share/skald/models/ggml-small.en.bin".into(),
+            model_path: default_preview_model_path().into(),
             threads: 0,
         }
     }
@@ -122,7 +122,7 @@ impl PreviewConfig {
     pub fn effective_model_path(&self) -> String {
         let trimmed = self.model_path.trim();
         if trimmed.is_empty() {
-            "~/.local/share/skald/models/ggml-small.en.bin".into()
+            default_preview_model_path().into()
         } else {
             trimmed.to_owned()
         }
@@ -355,6 +355,13 @@ impl Default for DaemonConfig {
 }
 impl Default for PathsConfig {
     fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        return Self {
+            config_dir: "~/Library/Application Support/Skald".into(),
+            model_dir: "~/Library/Application Support/Skald/models".into(),
+            runtime_dir: "~/Library/Caches/Skald/run".into(),
+        };
+        #[cfg(not(target_os = "macos"))]
         Self {
             config_dir: "~/.config/skald".into(),
             model_dir: "~/.local/share/skald/models".into(),
@@ -386,16 +393,32 @@ impl Default for AudioGatesConfig {
 }
 impl Default for AsrConfig {
     fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        let (gpu, gpu_backend) = (true, "metal");
+        #[cfg(not(target_os = "macos"))]
+        let (gpu, gpu_backend) = (true, "cuda");
+        #[cfg(target_os = "macos")]
+        let model_path = "~/Library/Application Support/Skald/models/ggml-large-v3-turbo-q5_0.bin";
+        #[cfg(not(target_os = "macos"))]
+        let model_path = "~/.local/share/skald/models/ggml-large-v3-turbo-q5_0.bin";
         Self {
             backend: "whisper_rs".into(),
-            model_path: "~/.local/share/skald/models/ggml-large-v3-turbo-q5_0.bin".into(),
+            model_path: model_path.into(),
             language: "en".into(),
             threads: 8,
-            gpu: true,
-            gpu_backend: "cuda".into(),
+            gpu,
+            gpu_backend: gpu_backend.into(),
             lifecycle: AsrLifecycleConfig::default(),
             hallucination_filter: HallucinationFilterConfig::default(),
         }
+    }
+}
+
+const fn default_preview_model_path() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "~/Library/Application Support/Skald/models/ggml-small.en.bin"
+    } else {
+        "~/.local/share/skald/models/ggml-small.en.bin"
     }
 }
 impl Default for AsrLifecycleConfig {
@@ -477,11 +500,15 @@ impl Default for DiagnosticsConfig {
 }
 impl Default for InjectionConfig {
     fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        let restore_clipboard = false;
+        #[cfg(not(target_os = "macos"))]
+        let restore_clipboard = true;
         Self {
             copy_to_clipboard: true,
             auto_paste: AutoPasteMode::Safe,
             max_paste_age_ms: 5_000,
-            restore_clipboard: true,
+            restore_clipboard,
             paste_delay_ms: 120,
             fallback_to_clipboard_only: true,
             notify_on_clipboard_only: true,
@@ -541,8 +568,12 @@ impl Config {
     /// circular during bootstrap). Use `paths.config_dir` only for styles,
     /// apps, snippets, and other layout files.
     pub fn path() -> Result<PathBuf, ConfigError> {
+        #[cfg(target_os = "macos")]
+        let relative = "Skald/config.toml";
+        #[cfg(not(target_os = "macos"))]
+        let relative = "skald/config.toml";
         dirs::config_dir()
-            .map(|path| path.join("skald/config.toml"))
+            .map(|path| path.join(relative))
             .ok_or(ConfigError::ConfigDirectoryUnavailable)
     }
 
@@ -892,10 +923,13 @@ fn collect_asr_errors(config: &Config, errors: &mut Vec<ConfigError>) {
     if config.asr.backend != "whisper_rs" {
         push_validation(errors, "asr.backend must be whisper_rs".into());
     }
-    if !matches!(config.asr.gpu_backend.as_str(), "cuda" | "vulkan" | "none") {
+    if !matches!(
+        config.asr.gpu_backend.as_str(),
+        "cuda" | "metal" | "vulkan" | "none"
+    ) {
         push_validation(
             errors,
-            "asr.gpu_backend must be cuda, vulkan, or none".into(),
+            "asr.gpu_backend must be cuda, metal, vulkan, or none".into(),
         );
     }
     if config.asr.threads == 0 {
@@ -1138,6 +1172,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_example_config_is_valid() {
+        let text = include_str!("../../../config-example/mac/config.toml");
+        let config = Config::from_toml(text).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.asr.gpu_backend, "metal");
+        assert!(!config.injection.restore_clipboard);
+    }
+
+    #[test]
     fn current_version_is_a_no_op_migration() {
         let text = toml::to_string(&Config::default()).unwrap();
         let config = Config::from_toml(&text).unwrap();
@@ -1185,10 +1229,7 @@ style = "dots"
         config.preview.enabled = true;
         config.preview.model_path.clear();
         let preview_asr = config.preview.to_asr_config(&config.asr);
-        assert_eq!(
-            preview_asr.model_path,
-            "~/.local/share/skald/models/ggml-small.en.bin"
-        );
+        assert_eq!(preview_asr.model_path, default_preview_model_path());
         assert!(!preview_asr.gpu);
         assert_eq!(preview_asr.lifecycle.mode, "keep_warm");
     }
