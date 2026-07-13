@@ -10,6 +10,10 @@ shortcut and preview overlay.
 Build locally with `just build-macos`. Create an ad-hoc signed app and disk
 image with `just macos-package`.
 
+If Hugging Face's direct model URL returns HTTP 403, install its official Xet
+client with `brew install hf` and rerun `skald models install`. Skald detects
+the client automatically and still verifies the downloaded model checksum.
+
 Skald uses CoreAudio through CPAL, Whisper Metal acceleration, the macOS
 pasteboard, Keychain, and a per-user LaunchAgent. Models and dictated audio
 remain local unless OpenRouter cleanup is explicitly enabled.

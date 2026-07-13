@@ -60,8 +60,8 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
         language: "English",
         intended_use: "preview",
-        hardware_guidance: "NVIDIA/CUDA preview",
-        description: "Fast GPU model, good for preview",
+        hardware_guidance: "Metal or NVIDIA/CUDA preview",
+        description: "Fast accelerated model, good for preview",
     },
     ModelCatalogEntry {
         id: "large-v3-turbo-q5",
@@ -72,8 +72,8 @@ pub const CATALOG: &[ModelCatalogEntry] = &[
         sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
         language: "Multilingual",
         intended_use: "final",
-        hardware_guidance: "NVIDIA/CUDA power-user",
-        description: "Highest quality CUDA model",
+        hardware_guidance: "Apple Silicon Metal or NVIDIA/CUDA",
+        description: "Highest quality accelerated model",
     },
 ];
 

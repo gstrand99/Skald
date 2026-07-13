@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{io::ErrorKind, path::Path, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, builder::PossibleValuesParser};
@@ -17,6 +17,7 @@ use skald_core::{
     protocol::{Command, ModelState},
     system_probe::{SystemProfile, probe_system},
 };
+use tokio::process::Command as ProcessCommand;
 
 use crate::send;
 
@@ -398,7 +399,21 @@ async fn install(id: &str, select_final: bool, select_preview: bool, json: bool)
         }
         bar.set_position(downloaded);
     };
-    download_model(entry, &destination, Some(&progress)).await?;
+    if let Err(error) = download_model(entry, &destination, Some(&progress)).await {
+        if !error.is_access_denied() {
+            return Err(error.into());
+        }
+        bar.abandon_with_message("Hugging Face direct download was denied; trying `hf`");
+        if !download_with_hf(entry.file_name, &model_dir).await? {
+            return Err(error).context(
+                "Hugging Face denied its direct model URL; install the official `hf` client \
+                 (`brew install hf` on macOS) and retry",
+            );
+        }
+        verify_model_file(&destination, entry.expected_size, entry.sha256)
+            .await
+            .context("the model downloaded by `hf` failed integrity verification")?;
+    }
     bar.finish_with_message(format!("Installed {}", entry.id));
     record_managed_model(&model_dir, entry)?;
     if select_final {
@@ -412,6 +427,28 @@ async fn install(id: &str, select_final: bool, select_preview: bool, json: bool)
         );
     }
     Ok(())
+}
+
+async fn download_with_hf(file_name: &str, model_dir: &Path) -> Result<bool> {
+    let status = match ProcessCommand::new("hf")
+        .args([
+            "download",
+            "ggerganov/whisper.cpp",
+            file_name,
+            "--local-dir",
+        ])
+        .arg(model_dir)
+        .status()
+        .await
+    {
+        Ok(status) => status,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error).context("failed to launch the official `hf` client"),
+    };
+    if !status.success() {
+        bail!("the official `hf` client failed with status {status}");
+    }
+    Ok(true)
 }
 
 async fn verify(id: Option<&str>, json: bool) -> Result<()> {
@@ -467,7 +504,7 @@ async fn select(id: &str, preview: bool, json: bool) -> Result<()> {
         bail!("model is not installed; run `skald models install {id}`");
     }
     let cuda = cuda_build().await;
-    if entry.gpu && cuda != Some(true) {
+    if entry.gpu && cuda != Some(true) && !cfg!(target_os = "macos") {
         eprintln!(
             "Warning: {id} is intended for CUDA use, but the running daemon is not CUDA-enabled or unavailable."
         );
