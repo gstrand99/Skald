@@ -18,6 +18,12 @@ Skald uses CoreAudio through CPAL, Whisper Metal acceleration, the macOS
 pasteboard, Keychain, and a per-user LaunchAgent. Models and dictated audio
 remain local unless OpenRouter cleanup is explicitly enabled.
 
+The daemon starts the signed `skald-native` helper as a long-lived broker. A
+versioned JSON protocol travels only over inherited stdin/stdout pipes, so no
+public broker socket or transcript-bearing command line is created. Requests
+are size-limited and operation-specific. If the broker exits, Skald restarts it
+once and retains the one-shot native and clipboard-only recovery paths.
+
 ## Permissions
 
 Skald needs microphone access to record speech. Safe paste additionally needs
@@ -30,6 +36,10 @@ ephemeral realtime text; preview text is cleared when each job ends. The global
 shortcut can be changed from the menu and is retained in macOS preferences.
 The `skald overlay` command opens this native app; Linux-only overlay preview
 flags are not available on macOS.
+
+Run `just test-macos-broker` to check the broker protocol and Accessibility
+status. `skald doctor` reports broker availability and keeps safe paste disabled
+when Accessibility permission is absent.
 
 Previous-clipboard restoration is disabled by default on macOS. Enabling it
 causes Skald to read the existing pasteboard before writing the transcript and

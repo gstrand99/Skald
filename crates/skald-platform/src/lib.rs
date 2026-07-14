@@ -6,6 +6,16 @@ use std::{
     time::Duration,
 };
 
+#[cfg(target_os = "macos")]
+use std::{
+    io::{BufRead, BufReader},
+    process::{Child, ChildStdin, ChildStdout},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -29,6 +39,10 @@ pub enum PlatformError {
     Failed { tool: &'static str },
     #[error("failed to decode {tool} output: {message}")]
     InvalidOutput { tool: &'static str, message: String },
+    #[error("native broker failed: {message}")]
+    NativeBroker { message: String },
+    #[error("native operation failed ({code}): {message}")]
+    NativeOperation { code: String, message: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -95,6 +109,10 @@ pub struct ClipboardSnapshot {
 
 pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
     #[cfg(target_os = "macos")]
+    if macos_broker_request("clipboard_write", Some(text), None, None).is_ok() {
+        return Ok(());
+    }
+    #[cfg(target_os = "macos")]
     if let Some(helper) = native_helper_path() {
         return write_with_command(helper, &["clipboard-write"], text, "skald-native");
     }
@@ -130,6 +148,12 @@ pub fn copy_to_clipboard(text: &str) -> Result<(), PlatformError> {
 }
 
 pub fn read_clipboard() -> Result<String, PlatformError> {
+    #[cfg(target_os = "macos")]
+    if let Ok(response) = macos_broker_request("clipboard_read", None, None, None)
+        && let Some(text) = response.text
+    {
+        return Ok(text);
+    }
     #[cfg(target_os = "macos")]
     if let Some(helper) = native_helper_path() {
         let output = Command::new(helper)
@@ -212,7 +236,8 @@ pub fn capture_active_target() -> Option<TargetContext> {
 #[must_use]
 pub fn paste_backend() -> Option<PasteBackend> {
     #[cfg(target_os = "macos")]
-    return command_exists("osascript").then_some(PasteBackend::MacOS);
+    return (native_helper_path().is_some() || command_exists("osascript"))
+        .then_some(PasteBackend::MacOS);
     #[cfg(not(target_os = "macos"))]
     {
         let session = env::var("XDG_SESSION_TYPE").unwrap_or_default();
@@ -232,6 +257,10 @@ pub fn paste_backend() -> Option<PasteBackend> {
 }
 
 pub fn paste(backend: PasteBackend) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
+    if backend == PasteBackend::MacOS && macos_broker_request("paste", None, None, None).is_ok() {
+        return Ok(());
+    }
     #[cfg(target_os = "macos")]
     if backend == PasteBackend::MacOS
         && let Some(helper) = native_helper_path()
@@ -457,15 +486,27 @@ pub fn paste_report() -> PasteReport {
     #[cfg(not(target_os = "macos"))]
     let session = environment.session_type.as_deref().unwrap_or("unknown");
     #[cfg(target_os = "macos")]
-    let clipboard_available = command_exists("pbcopy") && command_exists("pbpaste");
+    let clipboard_available =
+        native_helper_path().is_some() || (command_exists("pbcopy") && command_exists("pbpaste"));
     #[cfg(not(target_os = "macos"))]
     let clipboard_available = command_exists("wl-copy") || command_exists("xclip");
     #[cfg(target_os = "macos")]
     let backend = "macos";
     #[cfg(not(target_os = "macos"))]
     let backend = classify_paste_backend(session, desktop);
+    #[cfg(target_os = "macos")]
+    let paste_available = paste_backend().is_some() && macos_accessibility_granted();
+    #[cfg(not(target_os = "macos"))]
     let paste_available = paste_backend().is_some();
     let target_detection_available = capture_active_target().is_some();
+    #[cfg(target_os = "macos")]
+    let reason = if paste_available {
+        paste_reason_for_backend(backend, paste_available, target_detection_available)
+    } else {
+        "Accessibility permission is required for safe paste; clipboard fallback remains available"
+            .into()
+    };
+    #[cfg(not(target_os = "macos"))]
     let reason = paste_reason_for_backend(backend, paste_available, target_detection_available);
     PasteReport {
         clipboard_available,
@@ -610,6 +651,9 @@ pub fn trigger_guidance(session_type: &str, desktop: &str) -> TriggerGuidance {
 pub fn notify(summary: &str, body: &str) {
     #[cfg(target_os = "macos")]
     {
+        if macos_broker_request("notify", None, Some(summary), Some(body)).is_ok() {
+            return;
+        }
         let script = format!(
             "display notification {} with title {}",
             apple_script_string(body),
@@ -634,6 +678,16 @@ fn apple_script_string(value: &str) -> String {
 
 #[cfg(target_os = "macos")]
 fn capture_macos_target() -> Option<TargetContext> {
+    if let Ok(response) = macos_broker_request("target", None, None, None)
+        && let Some(target) = response.target
+    {
+        return Some(TargetContext {
+            backend: TargetBackend::MacOS,
+            id: target.pid.to_string(),
+            app_id: (!target.bundle_id.is_empty()).then_some(target.bundle_id),
+            title: None,
+        });
+    }
     if let Some(helper) = native_helper_path()
         && let Ok(output) = Command::new(helper).arg("target").output()
         && output.status.success()
@@ -668,6 +722,219 @@ fn native_helper_path() -> Option<std::path::PathBuf> {
     let current = std::env::current_exe().ok()?;
     let sibling = current.with_file_name("skald-native");
     sibling.is_file().then_some(sibling)
+}
+
+#[cfg(target_os = "macos")]
+const NATIVE_BROKER_PROTOCOL_VERSION: u32 = 1;
+
+#[cfg(target_os = "macos")]
+static NATIVE_BROKER: OnceLock<Mutex<Option<NativeBroker>>> = OnceLock::new();
+
+#[cfg(target_os = "macos")]
+static NATIVE_BROKER_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(target_os = "macos")]
+struct NativeBroker {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Serialize)]
+struct NativeBrokerRequest<'a> {
+    protocol_version: u32,
+    request_id: String,
+    operation: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    summary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    body: Option<&'a str>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+struct NativeBrokerResponse {
+    protocol_version: u32,
+    request_id: String,
+    ok: bool,
+    text: Option<String>,
+    target: Option<NativeBrokerTarget>,
+    accessibility: Option<bool>,
+    error: Option<NativeBrokerError>,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+struct NativeBrokerTarget {
+    pid: i64,
+    bundle_id: String,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(Deserialize)]
+struct NativeBrokerError {
+    code: String,
+    message: String,
+}
+
+#[cfg(target_os = "macos")]
+impl NativeBroker {
+    fn spawn() -> Result<Self, PlatformError> {
+        let helper = native_helper_path().ok_or_else(|| PlatformError::NativeBroker {
+            message: "skald-native is not installed beside the current executable".into(),
+        })?;
+        let mut child = Command::new(helper)
+            .arg("broker")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|error| PlatformError::NativeBroker {
+                message: error.to_string(),
+            })?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| PlatformError::NativeBroker {
+                message: "broker stdin is unavailable".into(),
+            })?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| PlatformError::NativeBroker {
+                message: "broker stdout is unavailable".into(),
+            })?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        })
+    }
+
+    fn send(
+        &mut self,
+        request: &NativeBrokerRequest<'_>,
+    ) -> Result<NativeBrokerResponse, PlatformError> {
+        serde_json::to_writer(&mut self.stdin, request).map_err(|error| {
+            PlatformError::NativeBroker {
+                message: error.to_string(),
+            }
+        })?;
+        self.stdin
+            .write_all(b"\n")
+            .and_then(|()| self.stdin.flush())
+            .map_err(|error| PlatformError::NativeBroker {
+                message: error.to_string(),
+            })?;
+        let mut line = String::new();
+        let read =
+            self.stdout
+                .read_line(&mut line)
+                .map_err(|error| PlatformError::NativeBroker {
+                    message: error.to_string(),
+                })?;
+        if read == 0 {
+            return Err(PlatformError::NativeBroker {
+                message: "broker closed its response stream".into(),
+            });
+        }
+        let response: NativeBrokerResponse =
+            serde_json::from_str(&line).map_err(|error| PlatformError::NativeBroker {
+                message: error.to_string(),
+            })?;
+        if response.protocol_version != NATIVE_BROKER_PROTOCOL_VERSION
+            || response.request_id != request.request_id
+        {
+            return Err(PlatformError::NativeBroker {
+                message: "broker response identity mismatch".into(),
+            });
+        }
+        if !response.ok {
+            let error = response.error.unwrap_or(NativeBrokerError {
+                code: "native_error".into(),
+                message: "native operation failed".into(),
+            });
+            return Err(PlatformError::NativeOperation {
+                code: error.code,
+                message: error.message,
+            });
+        }
+        Ok(response)
+    }
+
+    fn terminate(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_broker_request(
+    operation: &str,
+    text: Option<&str>,
+    summary: Option<&str>,
+    body: Option<&str>,
+) -> Result<NativeBrokerResponse, PlatformError> {
+    let request_id = format!(
+        "{}-{}",
+        std::process::id(),
+        NATIVE_BROKER_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let request = NativeBrokerRequest {
+        protocol_version: NATIVE_BROKER_PROTOCOL_VERSION,
+        request_id,
+        operation,
+        text,
+        summary,
+        body,
+    };
+    let broker = NATIVE_BROKER.get_or_init(|| Mutex::new(None));
+    let mut broker = broker.lock().map_err(|_| PlatformError::NativeBroker {
+        message: "broker lock is poisoned".into(),
+    })?;
+    for attempt in 0..2 {
+        if broker.is_none() {
+            *broker = Some(NativeBroker::spawn()?);
+        }
+        let result = broker.as_mut().expect("broker initialized").send(&request);
+        match result {
+            Ok(response) => return Ok(response),
+            Err(error @ PlatformError::NativeOperation { .. }) => return Err(error),
+            Err(error) if attempt == 0 => {
+                if let Some(mut failed) = broker.take() {
+                    failed.terminate();
+                }
+                tracing::debug!(%error, operation, "native broker request failed; restarting helper");
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("native broker retry loop returns")
+}
+
+#[cfg(target_os = "macos")]
+fn macos_accessibility_granted() -> bool {
+    if let Ok(response) = macos_broker_request("permissions", None, None, None) {
+        return response.accessibility.unwrap_or(false);
+    }
+    let Some(helper) = native_helper_path() else {
+        return false;
+    };
+    Command::new(helper)
+        .arg("permissions")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
+        .and_then(|value| {
+            value
+                .get("accessibility")
+                .and_then(serde_json::Value::as_bool)
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(target_os = "macos")]
@@ -949,17 +1216,23 @@ pub fn environment_report() -> EnvironmentReport {
         display_present: true,
         dbus_session_bus_present: false,
         xdg_runtime_dir_present: false,
-        tools: ["skald-native", "pbcopy", "pbpaste", "osascript"]
-            .into_iter()
-            .map(|name| ToolReport {
-                name,
-                available: if name == "skald-native" {
-                    native_helper_path().is_some()
-                } else {
-                    command_exists(name)
-                },
-            })
-            .collect(),
+        tools: [
+            "skald-native-broker",
+            "skald-native",
+            "pbcopy",
+            "pbpaste",
+            "osascript",
+        ]
+        .into_iter()
+        .map(|name| ToolReport {
+            name,
+            available: if matches!(name, "skald-native" | "skald-native-broker") {
+                native_helper_path().is_some()
+            } else {
+                command_exists(name)
+            },
+        })
+        .collect(),
     };
     #[cfg(not(target_os = "macos"))]
     {
@@ -1002,6 +1275,38 @@ fn command_exists(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn native_broker_request_omits_unrelated_sensitive_fields() {
+        let request = NativeBrokerRequest {
+            protocol_version: NATIVE_BROKER_PROTOCOL_VERSION,
+            request_id: "r1".into(),
+            operation: "target",
+            text: None,
+            summary: None,
+            body: None,
+        };
+        let value = serde_json::to_value(request).expect("serialize broker request");
+        assert_eq!(value["operation"], "target");
+        assert!(value.get("text").is_none());
+        assert!(value.get("summary").is_none());
+        assert!(value.get("body").is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn native_broker_response_accepts_absent_target() {
+        let response: NativeBrokerResponse = serde_json::from_value(serde_json::json!({
+            "protocol_version": 1,
+            "request_id": "r2",
+            "ok": true,
+            "target": null
+        }))
+        .expect("deserialize broker response");
+        assert!(response.ok);
+        assert!(response.target.is_none());
+    }
 
     #[test]
     fn finds_a_focused_node_in_nested_sway_tree() {

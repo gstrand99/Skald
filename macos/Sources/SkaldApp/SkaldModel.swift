@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 
 private struct TaggedState: Decodable {
@@ -52,10 +53,10 @@ enum HotKeyChoice: String, CaseIterable, Identifiable {
         }
     }
 
-    var modifiers: NSEvent.ModifierFlags {
+    var carbonModifiers: UInt32 {
         switch self {
-        case .controlOptionSpace, .controlOptionD: [.control, .option]
-        case .commandShiftSpace: [.command, .shift]
+        case .controlOptionSpace, .controlOptionD: UInt32(controlKey | optionKey)
+        case .commandShiftSpace: UInt32(cmdKey | shiftKey)
         }
     }
 }
@@ -72,6 +73,7 @@ final class SkaldModel: ObservableObject {
     @Published private(set) var peak = 0.0
     @Published private(set) var lastError: String?
     @Published private(set) var accessibilityGranted = false
+    @Published private(set) var shortcutAvailable = true
     @Published var overlayVisible: Bool {
         didSet {
             UserDefaults.standard.set(overlayVisible, forKey: "overlayVisible")
@@ -88,8 +90,7 @@ final class SkaldModel: ObservableObject {
     private var started = false
     private var eventTask: Task<Void, Never>?
     private var eventProcess: Process?
-    private var globalHotKey: Any?
-    private var localHotKey: Any?
+    private let hotKeyManager = GlobalHotKeyManager()
     private var overlayController: OverlayPanelController?
 
     init() {
@@ -216,25 +217,13 @@ final class SkaldModel: ObservableObject {
     }
 
     private func installHotKey() {
-        if let globalHotKey { NSEvent.removeMonitor(globalHotKey) }
-        if let localHotKey { NSEvent.removeMonitor(localHotKey) }
-        let choice = shortcut
-        globalHotKey = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.matches(event, choice: choice) else { return }
+        let status = hotKeyManager.register(choice: shortcut) { [weak self] in
             Task { @MainActor in self?.toggle() }
         }
-        localHotKey = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard Self.matches(event, choice: choice) else { return event }
-            Task { @MainActor in self?.toggle() }
-            return nil
+        shortcutAvailable = status == noErr
+        if !shortcutAvailable {
+            lastError = "Global shortcut is already in use"
         }
-    }
-
-    nonisolated private static func matches(_ event: NSEvent, choice: HotKeyChoice) -> Bool {
-        let mask: NSEvent.ModifierFlags = [.command, .control, .option, .shift]
-        return !event.isARepeat
-            && event.keyCode == choice.keyCode
-            && event.modifierFlags.intersection(mask) == choice.modifiers
     }
 
     private func restartEventStream() {

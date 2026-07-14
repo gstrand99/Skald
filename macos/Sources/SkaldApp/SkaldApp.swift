@@ -18,6 +18,9 @@ struct MenuContent: View {
                 Text(choice.label).tag(choice)
             }
         }
+        if !model.shortcutAvailable {
+            Text("Shortcut unavailable — choose another combination")
+        }
         Divider()
         Button("Install or repair daemon") { model.installDaemon() }
         if !model.accessibilityGranted {

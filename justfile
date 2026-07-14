@@ -220,6 +220,10 @@ build-macos:
     scripts/macos-cargo build -p skald-cli -p skald-platform
     swift build --package-path macos
 
+# Exercise the private native broker protocol and report Accessibility status.
+test-macos-broker: build-macos
+    echo '{"protocol_version":1,"request_id":"just-check","operation":"permissions"}' | macos/.build/debug/skald-native broker
+
 # Run macOS Rust and Swift checks without Linux desktop dependencies.
 check-macos:
     cargo fmt --check
