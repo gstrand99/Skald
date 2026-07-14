@@ -460,7 +460,7 @@ async fn main() -> Result<()> {
         Commands::Cancel => print_response(&send(Command::Cancel).await?)?,
         Commands::Watch { json } => watch(json).await?,
         Commands::Waybar => waybar().await?,
-        Commands::Overlay { command } => run_overlay(command)?,
+        Commands::Overlay { command } => run_overlay(command.as_ref())?,
         Commands::Transcribe { audio_file } => print_response(
             &send(Command::Transcribe {
                 audio_path: audio_file,
@@ -1151,7 +1151,45 @@ impl PreviewDisplay {
     }
 }
 
-fn run_overlay(command: Option<OverlayCommands>) -> Result<()> {
+#[cfg(target_os = "macos")]
+fn run_overlay(command: Option<&OverlayCommands>) -> Result<()> {
+    match command {
+        Some(OverlayCommands::Preview { .. }) => bail!(
+            "overlay preview options are provided by the native Skald app on macOS; \
+             run `skald overlay` and use the menu-bar app"
+        ),
+        None => {}
+    }
+    let mut process = std::process::Command::new("open");
+    if let Some(bundle) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(macos_app_bundle)
+    {
+        process.arg(bundle);
+    } else {
+        process.args(["-a", "Skald"]);
+    }
+    let status = process
+        .status()
+        .context("failed to open the native Skald app")?;
+    if status.success() {
+        Ok(())
+    } else {
+        bail!("opening the native Skald app failed with {status}");
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn macos_app_bundle(executable: &Path) -> Option<PathBuf> {
+    executable
+        .ancestors()
+        .find(|path| path.extension().is_some_and(|extension| extension == "app"))
+        .map(Path::to_path_buf)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn run_overlay(command: Option<&OverlayCommands>) -> Result<()> {
     let overlay = std::env::current_exe()
         .ok()
         .and_then(|path| {
@@ -1172,21 +1210,21 @@ fn run_overlay(command: Option<OverlayCommands>) -> Result<()> {
     {
         process.arg("--preview");
         if let Some(style) = style {
-            process.args(["--style", &style]);
+            process.args(["--style", style.as_str()]);
         }
-        if cycle {
+        if *cycle {
             process.arg("--cycle");
         }
-        if microphone {
+        if *microphone {
             process.arg("--microphone");
         }
         if let Some(mode) = mode {
-            process.args(["--mode", &mode]);
+            process.args(["--mode", mode.as_str()]);
         }
         if let Some(anchor) = anchor {
-            process.args(["--anchor", &anchor]);
+            process.args(["--anchor", anchor.as_str()]);
         }
-        if save {
+        if *save {
             process.arg("--save");
         }
     }

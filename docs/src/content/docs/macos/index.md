@@ -28,6 +28,8 @@ The menu-bar app streams daemon state and audio levels into a non-activating
 overlay. Enable `[preview].enabled` and install a preview model to also show
 ephemeral realtime text; preview text is cleared when each job ends. The global
 shortcut can be changed from the menu and is retained in macOS preferences.
+The `skald overlay` command opens this native app; Linux-only overlay preview
+flags are not available on macOS.
 
 Previous-clipboard restoration is disabled by default on macOS. Enabling it
 causes Skald to read the existing pasteboard before writing the transcript and
