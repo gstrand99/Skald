@@ -24,7 +24,11 @@ fn install_inner(log_level: &str, print_output: bool) -> Result<()> {
 
     #[cfg(target_os = "macos")]
     {
-        let _ = run_launchctl(&["bootout", &launchctl_service_target()?]);
+        if run_launchctl(&["bootout", &launchctl_service_target()?]).is_ok() {
+            // launchd can briefly retain the old label after bootout and reject an immediate
+            // bootstrap with error 5. Give it a bounded handoff window before reloading.
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
         run_launchctl(&[
             "bootstrap",
             &launchctl_domain()?,
