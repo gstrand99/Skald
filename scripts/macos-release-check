@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$root"
+
+app="dist/Skald.app"
+dmg="dist/Skald-arm64.dmg"
+checksum="${dmg}.sha256"
+version="$(cargo metadata --no-deps --format-version 1 \
+    | jq -r '.packages[] | select(.name == "skald-core") | .version')"
+binaries=(
+    "$app/Contents/MacOS/SkaldApp"
+    "$app/Contents/Resources/bin/skald"
+    "$app/Contents/Resources/bin/skald-native"
+    "$app/Contents/Resources/bin/skaldd"
+)
+
+scripts/macos-verify-app-contents "$app"
+bundle_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+if [[ "$bundle_version" != "$version" ]]; then
+    echo "bundle version $bundle_version does not match workspace version $version" >&2
+    exit 1
+fi
+for binary in "${binaries[@]}"; do
+    codesign --verify --strict --verbose=2 "$binary"
+    if [[ "$(lipo -archs "$binary")" != "arm64" ]]; then
+        echo "release binary is not Apple Silicon arm64-only: $binary" >&2
+        exit 1
+    fi
+done
+codesign --verify --deep --strict --verbose=2 "$app"
+hdiutil verify "$dmg"
+shasum -a 256 -c "$checksum"
+
+temporary="$(mktemp -d "${TMPDIR:-/tmp}/skald-macos-release.XXXXXX")"
+mount_point="$temporary/volume"
+installed_app="$temporary/Applications/Skald.app"
+mkdir -p "$mount_point" "$(dirname "$installed_app")"
+attached=0
+cleanup() {
+    if [[ "$attached" == "1" ]]; then
+        hdiutil detach -quiet "$mount_point" || true
+    fi
+    rm -rf "$temporary"
+}
+trap cleanup EXIT
+
+hdiutil attach -quiet -readonly -nobrowse -mountpoint "$mount_point" "$dmg"
+attached=1
+if [[ "$(readlink "$mount_point/Applications")" != "/Applications" ]]; then
+    echo "DMG is missing its Applications link" >&2
+    exit 1
+fi
+volume_contents="$(find "$mount_point" -mindepth 1 -maxdepth 1 -print \
+    | sed "s#^${mount_point}/##" \
+    | LC_ALL=C sort)"
+if [[ "$volume_contents" != $'Applications\nSkald.app' ]]; then
+    echo "unexpected top-level DMG contents; refusing to release" >&2
+    printf '%s\n' "$volume_contents" >&2
+    exit 1
+fi
+scripts/macos-verify-app-contents "$mount_point/Skald.app"
+ditto "$mount_point/Skald.app" "$installed_app"
+if [[ "$("$installed_app/Contents/Resources/bin/skald" --version)" != "skald $version" ]]; then
+    echo "installed skald version does not match workspace version $version" >&2
+    exit 1
+fi
+if [[ "$("$installed_app/Contents/Resources/bin/skaldd" --version)" != "skaldd $version" ]]; then
+    echo "installed skaldd version does not match workspace version $version" >&2
+    exit 1
+fi
+"$installed_app/Contents/Resources/bin/skald-native" permissions >/dev/null
+hdiutil detach -quiet "$mount_point"
+attached=0
+
+signature="$(codesign -dv --verbose=4 "$app" 2>&1)"
+if grep -q '^Signature=adhoc$' <<<"$signature"; then
+    if [[ "${SKALD_REQUIRE_DEVELOPER_ID:-0}" == "1" ]]; then
+        echo "Developer ID signature required, but package is ad-hoc signed" >&2
+        exit 1
+    fi
+    echo "Ad-hoc package verified; Gatekeeper and notarization checks skipped."
+else
+    if ! grep -q '^Authority=Developer ID Application:' <<<"$signature"; then
+        echo "package is not signed with a Developer ID Application identity" >&2
+        exit 1
+    fi
+    spctl --assess --type execute --verbose=2 "$app"
+    spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+    xcrun stapler validate "$dmg"
+fi

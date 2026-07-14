@@ -2,6 +2,11 @@
 set -euo pipefail
 
 : "${SKALD_NOTARY_PROFILE:?set SKALD_NOTARY_PROFILE to an xcrun notarytool keychain profile}"
+signature="$(codesign -dv --verbose=4 dist/Skald.app 2>&1)"
+if ! grep -q '^Authority=Developer ID Application:' <<<"$signature"; then
+    echo "notarization requires a Developer ID Application package" >&2
+    exit 1
+fi
 xcrun notarytool submit dist/Skald-arm64.dmg --keychain-profile "$SKALD_NOTARY_PROFILE" --wait
 xcrun stapler staple dist/Skald-arm64.dmg
-xcrun stapler validate dist/Skald-arm64.dmg
+SKALD_REQUIRE_DEVELOPER_ID=1 scripts/macos-release-check

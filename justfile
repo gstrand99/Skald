@@ -239,11 +239,14 @@ macos-package:
 macos-notarize:
     scripts/macos-notarize
 
-# Verify the packaged app, disk image, and checksum.
+# Verify signatures, package contents, install layout, disk image, and checksum.
+# Developer ID packages also require passing Gatekeeper and stapling checks.
 macos-release-check:
-    codesign --verify --strict --verbose=2 dist/Skald.app
-    hdiutil verify dist/Skald-arm64.dmg
-    shasum -a 256 -c dist/Skald-arm64.dmg.sha256
+    scripts/macos-release-check
+
+# Print the manual clean-install, upgrade, rollback, and uninstall checklist.
+macos-release-checklist:
+    scripts/macos-release-checklist
 
 # Optimized release builds for local installation.
 release:

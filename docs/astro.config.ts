@@ -66,6 +66,10 @@ export default defineConfig({
 						{ label: "Tray client", slug: "linux/tray" },
 					],
 				},
+				{
+					label: "macOS",
+					items: [{ label: "Install and releases", slug: "macos" }],
+				},
 			],
 			customCss: ["./src/styles/custom.css"],
 		}),

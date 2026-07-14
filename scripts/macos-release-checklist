@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat <<'EOF'
+Skald macOS release validation checklist
+
+Automated checks:
+- Build a Developer ID package from the release tag with just macos-package.
+- Submit it with just macos-notarize.
+- Run SKALD_REQUIRE_DEVELOPER_ID=1 just macos-release-check.
+- Confirm the release contains only the allowlisted app files, DMG, and checksum.
+
+Clean install on an Apple Silicon macOS 14+ account:
+- Verify the downloaded DMG checksum, open it, and drag Skald to Applications.
+- Open Skald without bypassing Gatekeeper.
+- Install the daemon and install/select small.en-q5 from the embedded CLI.
+- Grant Microphone and Accessibility access through normal macOS prompts.
+- Confirm doctor reports the daemon, model, broker, target, clipboard, and paste readiness.
+- Dictate into TextEdit with the global shortcut and confirm automatic paste.
+- Dictate in Terminal and confirm clipboard-only output followed by manual Command-V.
+- Log out and back in; confirm the LaunchAgent and menu app recover normally.
+
+Upgrade from the previous release:
+- Back up config.toml, install the new app over the old app, and reopen it.
+- Run config upgrade and Install or repair daemon from the new app.
+- Confirm models, settings, styles, snippets, and Keychain access remain available.
+- Repeat doctor, TextEdit dictation, and Terminal clipboard validation.
+
+Rollback:
+- Quit Skald, install the previous app, and restore its saved config if needed.
+- Run Install or repair daemon from the restored app.
+- Repeat doctor and the full dictation path.
+
+Uninstall:
+- Run service uninstall from the embedded CLI, quit Skald, and remove the app.
+- Confirm the LaunchAgent is absent. Remove retained data and the OpenRouter
+  Keychain secret only when testing a complete data purge.
+
+Record the macOS version, hardware, release tag, signing identity, notary
+submission ID, and any failed item in the release notes.
+EOF
+

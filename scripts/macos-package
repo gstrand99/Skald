@@ -4,6 +4,28 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
+version="$(cargo metadata --no-deps --format-version 1 \
+    | jq -r '.packages[] | select(.name == "skald-core") | .version')"
+build_number="${SKALD_BUILD_NUMBER:-1}"
+if [[ ! "$build_number" =~ ^[0-9]+$ ]]; then
+    echo "SKALD_BUILD_NUMBER must be an integer" >&2
+    exit 1
+fi
+identity="${SKALD_CODESIGN_IDENTITY:--}"
+timestamp=(--timestamp=none)
+if [[ "$identity" != "-" ]]; then
+    tag="$(git describe --tags --exact-match 2>/dev/null || true)"
+    if [[ "$tag" != "v$version" ]]; then
+        echo "Developer ID packaging requires release tag v$version" >&2
+        exit 1
+    fi
+    if [[ -n "$(git status --porcelain)" ]]; then
+        echo "Developer ID packaging requires a clean worktree" >&2
+        exit 1
+    fi
+    timestamp=(--timestamp)
+fi
+
 scripts/macos-cargo build -p skaldd --release --locked --no-default-features --features asr-whisper-rs-metal
 scripts/macos-cargo build -p skald-cli --release --locked
 swift build --package-path macos -c release
@@ -12,24 +34,26 @@ app="dist/Skald.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/bin" "$app/Contents/Library/LaunchAgents"
 cp macos/Info.plist "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" "$app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $build_number" "$app/Contents/Info.plist"
 cp macos/com.gstrand.skald.daemon.plist "$app/Contents/Library/LaunchAgents/"
 cp macos/.build/release/SkaldApp "$app/Contents/MacOS/SkaldApp"
 cp macos/.build/release/skald-native target/release/skald target/release/skaldd "$app/Contents/Resources/bin/"
 
-identity="${SKALD_CODESIGN_IDENTITY:--}"
-timestamp=(--timestamp=none)
-if [[ "$identity" != "-" ]]; then
-    timestamp=(--timestamp)
-fi
 for binary in "$app/Contents/Resources/bin/skald" "$app/Contents/Resources/bin/skald-native" "$app/Contents/MacOS/SkaldApp"; do
     codesign --force --options runtime "${timestamp[@]}" --sign "$identity" "$binary"
 done
 codesign --force --options runtime "${timestamp[@]}" --entitlements macos/Skald.entitlements --sign "$identity" "$app/Contents/Resources/bin/skaldd"
 codesign --force --options runtime "${timestamp[@]}" --entitlements macos/Skald.entitlements --sign "$identity" "$app"
 codesign --verify --strict --verbose=2 "$app"
+scripts/macos-verify-app-contents "$app"
 
 rm -f dist/Skald-arm64.dmg
-hdiutil create -quiet -volname Skald -srcfolder "$app" -ov -format UDZO dist/Skald-arm64.dmg
+staging="$(mktemp -d "${TMPDIR:-/tmp}/skald-macos-dmg.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+cp -R "$app" "$staging/Skald.app"
+ln -s /Applications "$staging/Applications"
+hdiutil create -quiet -volname Skald -srcfolder "$staging" -ov -format UDZO dist/Skald-arm64.dmg
 if [[ "$identity" != "-" ]]; then
     codesign --force "${timestamp[@]}" --sign "$identity" dist/Skald-arm64.dmg
 fi

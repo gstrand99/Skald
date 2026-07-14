@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+app="${1:?usage: scripts/macos-verify-app-contents APP_PATH}"
+if [[ ! -d "$app" ]]; then
+    echo "macOS app not found: $app" >&2
+    exit 1
+fi
+
+expected="$(printf '%s\n' \
+    Contents/Info.plist \
+    Contents/Library/LaunchAgents/com.gstrand.skald.daemon.plist \
+    Contents/MacOS/SkaldApp \
+    Contents/Resources/bin/skald \
+    Contents/Resources/bin/skald-native \
+    Contents/Resources/bin/skaldd \
+    Contents/_CodeSignature/CodeResources)"
+actual="$(find "$app" \( -type f -o -type l \) -print \
+    | sed "s#^${app}/##" \
+    | LC_ALL=C sort)"
+
+if [[ "$actual" != "$expected" ]]; then
+    echo "unexpected macOS app contents; refusing to release" >&2
+    diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual") >&2 || true
+    exit 1
+fi
+
