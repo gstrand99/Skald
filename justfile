@@ -387,4 +387,10 @@ check: docs-check
         cargo fmt --check
         cargo clippy --workspace --all-targets --locked -- -D warnings
         cargo test --workspace --locked
+        just test-runtime
     fi
+
+# Test Linux startup and paste safety using temporary config and fake desktop tools.
+test-runtime:
+    cargo build -p skaldd --locked
+    python3 scripts/test-runtime

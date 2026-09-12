@@ -33,7 +33,7 @@ use skald_core::{
     vocabulary::{VocabularyImportFormat, VocabularyImportMode, VocabularyImportOptions},
 };
 use skald_platform::{SessionEnvironmentSnapshot, session_environment_mismatch, trigger_guidance};
-use tokio::{io::BufReader, net::UnixStream};
+use tokio::net::UnixStream;
 
 #[derive(Debug, Parser)]
 #[command(name = "skald", version, about = "Control the Skald dictation daemon")]
@@ -990,7 +990,7 @@ async fn watch(json: bool) -> Result<()> {
     if json {
         event_kinds.push(EventKind::AudioLevel);
     }
-    let (response, reader) = client::subscribe(&socket, event_kinds).await?;
+    let (response, mut reader) = client::subscribe(&socket, event_kinds).await?;
     if !response.ok {
         if let Some(error) = &response.error {
             bail!("{} ({})", error.message, error.code);
@@ -1000,7 +1000,6 @@ async fn watch(json: bool) -> Result<()> {
     if json {
         print_initial_status_event(response.status)?;
     }
-    let mut reader = BufReader::new(reader);
     let mut preview_display = PreviewDisplay::default();
     let mut recording = false;
     loop {
@@ -1266,9 +1265,8 @@ async fn waybar() -> Result<()> {
         }
 
         match client::subscribe(&socket, kinds.clone()).await {
-            Ok((response, reader)) if response.ok => {
+            Ok((response, mut reader)) if response.ok => {
                 backoff = Duration::from_secs(1);
-                let mut reader = BufReader::new(reader);
                 while let Ok(event) = client::read_event(&mut reader).await {
                     if let Some(status) = skald_core::desktop::DesktopStatus::from_event(&event) {
                         emit_waybar_status(&status, &mut last_json)?;

@@ -2,9 +2,8 @@
 mod linux;
 
 #[cfg(target_os = "linux")]
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    linux::run().await
+fn main() -> anyhow::Result<()> {
+    linux::run()
 }
 
 #[cfg(not(target_os = "linux"))]

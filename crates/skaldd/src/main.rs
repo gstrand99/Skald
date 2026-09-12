@@ -13,7 +13,14 @@ mod preview;
 mod preview_asr;
 mod template_extract;
 
-use std::{path::Path, sync::Arc};
+use std::{
+    fs::{File, OpenOptions},
+    io::ErrorKind,
+    os::unix::fs::{FileTypeExt, OpenOptionsExt},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -69,7 +76,8 @@ async fn main() -> Result<()> {
 
     ensure_runtime_dir_for(&config.paths)?;
     let socket = socket_path_for(&config.paths)?;
-    remove_stale_socket(&socket)?;
+    let _socket_lock = lock_socket(&socket)?;
+    remove_stale_socket(&socket).await?;
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to bind {}", socket.display()))?;
     secure_socket_permissions(&socket).context("failed to secure daemon socket permissions")?;
@@ -142,10 +150,112 @@ async fn main() -> Result<()> {
     let _ = std::fs::remove_file(socket);
     Ok(())
 }
-fn remove_stale_socket(path: &Path) -> Result<()> {
-    if path.exists() {
-        std::fs::remove_file(path)
-            .with_context(|| format!("failed to remove stale socket {}", path.display()))?;
+fn lock_socket(path: &Path) -> Result<File> {
+    let lock_path = path.with_extension("lock");
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_path)
+        .with_context(|| format!("failed to open daemon lock {}", lock_path.display()))?;
+    lock.try_lock()
+        .with_context(|| format!("daemon socket is in use: {}", path.display()))?;
+    // Keep this file on disk: unlinking a lock permits locking a different inode.
+    Ok(lock)
+}
+
+async fn remove_stale_socket(path: &Path) -> Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).context("failed to inspect daemon socket"),
+    };
+    anyhow::ensure!(
+        metadata.file_type().is_socket(),
+        "refusing to remove non-socket path: {}",
+        path.display()
+    );
+    // Also protect running daemons from older releases that do not hold a lock.
+    match tokio::time::timeout(
+        Duration::from_millis(250),
+        tokio::net::UnixStream::connect(path),
+    )
+    .await
+    {
+        Ok(Err(error)) if error.kind() == ErrorKind::ConnectionRefused => {
+            std::fs::remove_file(path)
+                .with_context(|| format!("failed to remove stale socket {}", path.display()))?;
+        }
+        Ok(Err(error)) if error.kind() == ErrorKind::NotFound => {}
+        Ok(Err(error)) => {
+            return Err(error).context("cannot determine whether daemon socket is stale");
+        }
+        Ok(Ok(_)) | Err(_) => anyhow::bail!("daemon socket is in use: {}", path.display()),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::{fs::MetadataExt, net::UnixListener as StdUnixListener};
+
+    fn test_socket_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "skald-startup-{}.sock",
+            skald_core::protocol::JobId::new().0
+        ))
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_a_live_socket() {
+        let path = test_socket_path();
+        let listener = StdUnixListener::bind(&path).expect("bind existing daemon");
+        let inode = std::fs::metadata(&path).expect("socket metadata").ino();
+        assert!(remove_stale_socket(&path).await.is_err());
+        assert_eq!(
+            std::fs::metadata(&path).expect("socket preserved").ino(),
+            inode
+        );
+        tokio::net::UnixStream::connect(&path)
+            .await
+            .expect("existing daemon still reachable");
+        drop(listener);
+        std::fs::remove_file(path).expect("remove socket");
+    }
+
+    #[tokio::test]
+    async fn startup_removes_a_stale_socket() {
+        let path = test_socket_path();
+        drop(StdUnixListener::bind(&path).expect("bind stale socket"));
+        remove_stale_socket(&path)
+            .await
+            .expect("remove stale socket");
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_an_unexpected_file() {
+        let path = test_socket_path();
+        std::fs::write(&path, "keep this file").expect("write unexpected file");
+        assert!(remove_stale_socket(&path).await.is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("file preserved"),
+            "keep this file"
+        );
+        std::fs::remove_file(path).expect("remove test file");
+    }
+
+    #[test]
+    fn startup_lock_excludes_a_second_daemon_until_released() {
+        let path = test_socket_path();
+        let first = lock_socket(&path).expect("first daemon lock");
+        assert!(lock_socket(&path).is_err());
+        drop(first);
+        let next = lock_socket(&path).expect("lock released after daemon exits");
+        drop(next);
+        std::fs::remove_file(path.with_extension("lock")).expect("remove test lock");
+    }
 }

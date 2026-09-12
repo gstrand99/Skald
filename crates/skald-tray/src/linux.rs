@@ -210,9 +210,8 @@ async fn event_worker(socket: PathBuf, tx: mpsc::UnboundedSender<StateUpdate>) {
         }
 
         match client::subscribe(&socket, kinds.clone()).await {
-            Ok((response, reader)) if response.ok => {
+            Ok((response, mut reader)) if response.ok => {
                 backoff = Duration::from_secs(1);
-                let mut reader = tokio::io::BufReader::new(reader);
                 while let Ok(event) = client::read_event(&mut reader).await {
                     let job_state = match &event {
                         skald_core::protocol::Event::State { job_state, .. } => job_state.clone(),

@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Exercise Linux daemon startup and paste safety with isolated desktop tools."""
+
+import json
+from pathlib import Path
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+
+
+DAEMON = Path(__file__).resolve().parents[1] / "target/debug/skaldd"
+MOCK_TOOL = """
+import json, os, sys, time
+from pathlib import Path
+root = Path(os.environ['SKALD_TEST_ROOT'])
+tool = Path(sys.argv[0]).name
+if tool == 'wl-copy':
+    text = sys.stdin.read()
+    if '--primary' not in sys.argv:
+        (root / 'clipboard').write_text(text)
+        (root / 'copied-at').write_text(str(time.monotonic()))
+elif tool == 'wl-paste':
+    sys.stdout.write((root / 'clipboard').read_text())
+elif sys.argv[1:] == ['activewindow', '-j']:
+    copied = root / 'copied-at'
+    changed = (root / 'change-focus').exists() and copied.exists() and time.monotonic() - float(copied.read_text()) >= 0.15
+    print(json.dumps({'address': '0x2' if changed else '0x1', 'class': 'editor', 'title': 'Test'}))
+elif sys.argv[1:3] == ['dispatch', 'sendshortcut']:
+    (root / 'pasted').write_text('yes')
+else:
+    sys.exit(1)
+"""
+
+
+@unittest.skipUnless(sys.platform == "linux", "Linux desktop adapter tests")
+class RuntimeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="skald-test-", dir="/tmp")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.config = self.root / "config/skald"
+        self.config.mkdir(parents=True)
+        snippets = self.config / "snippets"
+        snippets.mkdir()
+        (snippets / "test.toml").write_text(
+            'name = "test"\ntype = "insert"\ncontent_file = "test.md"\n'
+        )
+        (snippets / "test.md").write_text("Skald runtime test")
+        tools = self.root / "bin"
+        tools.mkdir()
+        (tools / "sh").symlink_to("/bin/sh")
+        for name in ("hyprctl", "wl-copy", "wl-paste"):
+            tool = tools / name
+            tool.write_text(f"#!{sys.executable}\n{MOCK_TOOL}")
+            tool.chmod(0o700)
+        # Pass only this fixture's environment; never use real desktop tools or config.
+        self.environment = {
+            "HOME": str(self.root),
+            "PATH": str(tools),
+            "XDG_CONFIG_HOME": str(self.config.parent),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+            "XDG_SESSION_TYPE": "wayland",
+            "XDG_CURRENT_DESKTOP": "Hyprland",
+            "SKALD_TEST_ROOT": str(self.root),
+        }
+        self.socket_path = self.root / "runtime/skald/skaldd.sock"
+
+    def start_daemon(self, max_age=10000):
+        (self.config / "config.toml").write_text(f"""
+[paths]
+config_dir = {json.dumps(str(self.config))}
+[asr]
+gpu = false
+gpu_backend = "none"
+[asr.lifecycle]
+mode = "on_demand"
+warm_on_daemon_start = false
+[preview]
+enabled = false
+[cleanup]
+enabled = false
+provider = "none"
+[notifications]
+enabled = false
+[injection]
+restore_clipboard = false
+paste_delay_ms = 400
+max_paste_age_ms = {max_age}
+""")
+        log = (self.root / "daemon.log").open("w+")
+        self.addCleanup(log.close)
+        process = subprocess.Popen(
+            [DAEMON, "--foreground"], env=self.environment, stdout=log, stderr=log
+        )
+
+        def stop():
+            if process.poll() is None:
+                process.send_signal(signal.SIGINT)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+
+        self.addCleanup(stop)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                log.seek(0)
+                self.fail(f"daemon failed to start: {log.read()}")
+            if self.socket_path.exists():
+                self.assertTrue(self.request("status")["ok"])
+                return
+            time.sleep(0.01)
+        self.fail("daemon did not start")
+
+    def connect(self):
+        connection = socket.socket(socket.AF_UNIX)
+        connection.settimeout(5)
+        self.addCleanup(connection.close)
+        connection.connect(str(self.socket_path))
+        reader = connection.makefile("rb")
+        self.addCleanup(reader.close)
+        return connection, reader
+
+    @staticmethod
+    def send(connection, command, **fields):
+        request = {"protocol_version": 1, "request_id": "test", "cmd": command, **fields}
+        connection.sendall(json.dumps(request).encode() + b"\n")
+
+    def request(self, command, **fields):
+        connection, reader = self.connect()
+        self.send(connection, command, **fields)
+        return json.loads(reader.readline())
+
+    def insert(self):
+        events, reader = self.connect()
+        self.send(events, "subscribe", events=["result"])
+        self.assertTrue(json.loads(reader.readline())["ok"])
+        self.assertTrue(self.request("insert_snippet", name="test")["ok"])
+        result = json.loads(reader.readline())["result"]
+        self.assertTrue(result["copied_to_clipboard"])
+        self.assertEqual((self.root / "clipboard").read_text(), "Skald runtime test")
+        return result
+
+    def test_stable_target_pastes(self):
+        self.start_daemon()
+        self.assertTrue(self.insert()["paste_succeeded"])
+        self.assertTrue((self.root / "pasted").exists())
+
+    def test_focus_change_during_clipboard_delay_prevents_paste(self):
+        (self.root / "change-focus").touch()
+        self.start_daemon()
+        result = self.insert()
+        self.assertFalse(result["paste_attempted"])
+        self.assertIn("target changed", result["insertion_reason"])
+        self.assertFalse((self.root / "pasted").exists())
+
+    def test_paste_age_includes_clipboard_delay(self):
+        self.start_daemon(max_age=200)
+        result = self.insert()
+        self.assertFalse(result["paste_attempted"])
+        self.assertIn("maximum paste age", result["insertion_reason"])
+        self.assertFalse((self.root / "pasted").exists())
+
+    def test_second_daemon_leaves_first_reachable(self):
+        self.start_daemon()
+        inode = self.socket_path.stat().st_ino
+        duplicate = subprocess.run(
+            [DAEMON, "--foreground"], env=self.environment,
+            capture_output=True, text=True, timeout=5,
+        )
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("in use", duplicate.stderr)
+        self.assertEqual(self.socket_path.stat().st_ino, inode)
+        self.assertTrue(self.request("status")["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

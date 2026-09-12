@@ -155,6 +155,14 @@ pub(crate) async fn insert_if_safe(
         );
     }
     let target_at_start = state.target_at_start.lock().await.take();
+    if state.injection.auto_paste == skald_core::config::AutoPasteMode::Off {
+        return injection::PasteOutcome::disabled("automatic paste is disabled");
+    }
+    // Focus and paste age must be sampled after waiting for clipboard availability.
+    tokio::time::sleep(std::time::Duration::from_millis(
+        state.injection.paste_delay_ms,
+    ))
+    .await;
     let target_before_paste = capture_active_target_async().await;
     let paste_backend = skald_platform::paste_backend();
     if let Some(outcome) = injection::evaluate_paste_safety(
@@ -169,10 +177,6 @@ pub(crate) async fn insert_if_safe(
         return handle_clipboard_fallback(state, job_id, outcome);
     }
     update_state(state, Some(job_id.clone()), JobState::Injecting).await;
-    let delay_ms = state.injection.paste_delay_ms;
-    tokio::task::spawn_blocking(move || skald_platform::wait_for_clipboard(delay_ms))
-        .await
-        .ok();
     let backend = paste_backend.expect("safety check passed");
     match tokio::task::spawn_blocking(move || skald_platform::paste(backend)).await {
         Ok(Ok(())) => injection::PasteOutcome::succeeded(),

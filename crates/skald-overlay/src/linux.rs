@@ -167,11 +167,10 @@ fn spawn_event_worker(socket: PathBuf, ui_tx: mpsc::Sender<UiMessage>) {
             let mut backoff = Duration::from_secs(1);
             loop {
                 match client::subscribe(&socket, kinds.clone()).await {
-                    Ok((response, reader)) => {
+                    Ok((response, mut reader)) => {
                         if response.ok {
                             let _ = ui_tx.send(UiMessage::Connected);
                             backoff = Duration::from_secs(1);
-                            let mut reader = tokio::io::BufReader::new(reader);
                             loop {
                                 match client::read_event(&mut reader).await {
                                     Ok(event) => {

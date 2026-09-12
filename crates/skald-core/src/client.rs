@@ -103,7 +103,10 @@ pub async fn request(path: &Path, command: Command) -> Result<Response> {
     Ok(response)
 }
 
-pub async fn subscribe(path: &Path, events: Vec<EventKind>) -> Result<(Response, OwnedReadHalf)> {
+pub async fn subscribe(
+    path: &Path,
+    events: Vec<EventKind>,
+) -> Result<(Response, BufReader<OwnedReadHalf>)> {
     let stream = connect_socket(path).await?;
     let (reader, mut writer) = stream.into_split();
     let request = Request {
@@ -119,7 +122,8 @@ pub async fn subscribe(path: &Path, events: Vec<EventKind>) -> Result<(Response,
         .context("daemon closed without a subscribe response")?;
     let response: Response = serde_json::from_str(&line)?;
     ensure_supported_protocol_version(response.protocol_version)?;
-    let reader = lines.into_inner().into_inner();
+    // The acknowledgement read may also buffer whole or partial events.
+    let reader = lines.into_inner();
     Ok((response, reader))
 }
 
@@ -149,6 +153,69 @@ async fn write_request(
 mod tests {
     use super::*;
     use crate::protocol::{JobId, JobState, ModelState, PublicDictationResult};
+
+    #[tokio::test]
+    async fn subscription_preserves_events_buffered_with_response() {
+        let path = std::env::temp_dir().join(format!("skald-client-{}.sock", Ulid::new()));
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind test socket");
+        let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept client");
+            let (reader, mut writer) = stream.into_split();
+            let mut request = String::new();
+            BufReader::new(reader)
+                .read_line(&mut request)
+                .await
+                .expect("request");
+            let request: Request = serde_json::from_str(&request).expect("parse request");
+            let response = serde_json::json!({
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": request.request_id,
+                "ok": true
+            });
+            let event = serde_json::to_string(&Event::State {
+                protocol_version: PROTOCOL_VERSION,
+                timestamp_ms: 42,
+                job_id: None,
+                job_state: JobState::Recording,
+                final_model_state: ModelState::Ready,
+            })
+            .expect("serialize event");
+            let split = event.len() / 2;
+            // Coalesce a whole event and part of the next into the acknowledgement read.
+            writer
+                .write_all(format!("{response}\n{event}\n{}", &event[..split]).as_bytes())
+                .await
+                .expect("response and buffered events");
+            continue_rx.await.expect("client subscribed");
+            writer
+                .write_all(format!("{}\n", &event[split..]).as_bytes())
+                .await
+                .expect("remaining event bytes");
+        });
+        let (response, mut reader) = subscribe(&path, vec![EventKind::State])
+            .await
+            .expect("subscribe");
+        assert!(response.ok);
+        continue_tx.send(()).expect("continue server");
+        for _ in 0..2 {
+            let event =
+                tokio::time::timeout(std::time::Duration::from_secs(2), read_event(&mut reader))
+                    .await
+                    .expect("event arrived")
+                    .expect("valid complete event");
+            assert!(matches!(
+                event,
+                Event::State {
+                    job_state: JobState::Recording,
+                    timestamp_ms: 42,
+                    ..
+                }
+            ));
+        }
+        server.await.expect("server completed");
+        std::fs::remove_file(path).expect("remove test socket");
+    }
 
     #[test]
     fn accepts_current_and_older_protocol_versions() {
